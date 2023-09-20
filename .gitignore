@@ -6,6 +6,7 @@ __pycache__/
 Trained_Models/
 Tensorboard_logger/
 tmp2/
+Results/
 .vs/
 Baselines/BIGMRTA/Data
 # C extensions
