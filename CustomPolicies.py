@@ -154,10 +154,10 @@ class ActorCriticGCAPSPolicy(BasePolicy):
         #th.nn.init.uniform_(self.trainable_output.weight, -0.001, 0.001)
 
         self.bo1 = th.nn.BatchNorm1d(128)
-       # self.bo2 = th.nn.BatchNorm1d(64)
+        self.bo2 = th.nn.BatchNorm1d(64)
         # non-trainable part
-       # self.non_trainable_output_weights = th.nn.Parameter(torch.zeros(2, 64), requires_grad=False)
-       # self.non_trainable_output_bias = th.nn.Parameter(torch.zeros(2), requires_grad=True)
+        self.non_trainable_output_weights = th.nn.Parameter(torch.zeros(2, 64), requires_grad=False)
+        self.non_trainable_output_bias = th.nn.Parameter(torch.zeros(2), requires_grad=True)
         
 
         
@@ -255,10 +255,10 @@ class ActorCriticGCAPSPolicy(BasePolicy):
         x = self.network(obs)
         #x = self.bo2(x)
         trainable_part = self.trainable_output(x)
-        #non_trainable_part = F.linear(x, self.non_trainable_output_weights, self.non_trainable_output_bias)
-       # combined_output = torch.cat((non_trainable_part, trainable_part ), dim=1)
+        non_trainable_part = F.linear(x, self.non_trainable_output_weights, self.non_trainable_output_bias)
+        combined_output = torch.cat((non_trainable_part, trainable_part ), dim=1)
         #print(combined_output)
-        sigmoid_output = self.final_output(trainable_part)
+        sigmoid_output = self.final_output(combined_output)
         return sigmoid_output
 
     def predict_values(self, obs: th.Tensor) -> th.Tensor:

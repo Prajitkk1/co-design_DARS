@@ -72,13 +72,13 @@ class CAPAM(nn.Module):
         self.activ = nn.Tanh()
 
     def data_loader(self, data, batch_size, index):
-        X = data['task_graph_nodes'][index:index+batch_size, :,:]
+        X = data['task_graph_nodes'][index:index+batch_size, :,:].to(device=self.init_embed.weight.device)
         num_samples, num_locations, _ = X.size()
         #print([num_samples, num_locations])
         if self.tda:
             L = data["topo_laplacian"][index:index+batch_size, :,:]
         else:
-            A = data['task_graph_adjacency'][index:index+batch_size, :,:]
+            A = data['task_graph_adjacency'][index:index+batch_size, :,:].to(device=self.init_embed.weight.device)
             # A = data['task_graph_adjacency']
             D = torch.mul(torch.eye(num_locations, device=X.device).expand((num_samples, num_locations, num_locations)),
                           (A.sum(-1) - 1)[:, None].expand((num_samples, num_locations, num_locations)))

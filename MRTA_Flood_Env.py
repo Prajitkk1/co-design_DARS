@@ -19,10 +19,12 @@ from scipy.io import loadmat
 from scipy.interpolate import griddata
 import math
 import os 
+
+np.random.seed(0)
 Paret = loadmat('paretos.mat')
 # Assume Paret is a numpy array
 Paret = np.array(Paret['Paret'])
-np.random.seed(0)
+
 # Training
 Capas = Paret[:, [6, 7, 8]]
 
@@ -50,7 +52,7 @@ action_0_bounds = {
             }
 
 def scale_action_values(action_values):
-    assert len(action_values) == 1, "The input array should have 3 values."
+    assert len(action_values) == 3, "The input array should have 3 values."
     scaled_values = np.zeros_like(action_values, dtype=float)
 
     # Scale the first value to the range 2 to 7 and round to the nearest integer.
@@ -85,10 +87,11 @@ class MRTA_Flood_Env(Env):
         # It would be great if we can force the agent to choose not-done task
         super(MRTA_Flood_Env, self).__init__()
         self.n_locations = n_locations
-        low_bounds = np.array([-1])
-        high_bounds = np.array([1])
-        self.action_space = Box(low=low_bounds, high=high_bounds, shape=(1,))
+        low_bounds = np.array([-1,-1,-1])
+        high_bounds = np.array([1,1,1])
+        self.action_space = Box(low=low_bounds, high=high_bounds, shape=(3,))
         self.locations = np.random.random((n_locations, 2))*5
+        #print(self.locations)
         self.depot = self.locations[0, :]
         self.visited = visited
         self.n_agents = n_agents
@@ -112,10 +115,11 @@ class MRTA_Flood_Env(Env):
 
         self.total_reward = 0.0
         self.total_length = 0
-        self.max_capacity = 5
-        self.max_range = 5.68
+        self.max_capacity = 4
+        self.max_range = 9.58
 
         self.time_deadlines = (torch.tensor(np.random.random((1, n_locations)))*.3 + .7)*1
+
         self.time_deadlines[0, 0] = 1000000
         self.location_demand = torch.ones((1, n_locations), dtype=torch.float32)
         self.task_done = torch.zeros((1, n_locations), dtype=torch.float32)
@@ -183,12 +187,11 @@ class MRTA_Flood_Env(Env):
 
         
 
-    def initialize(self):
-        self.max_capacity = 5
-        self.max_range = 8.13
-        #speed = get_speed(self.max_capacity, self.max_range)
-        self.agent_speed = 23.6  # this param should be handles=d carefully. Makesure this is the same for the baselines, 23.7 is for the f450 baselines
-
+    def initialize(self, payload, range_1):
+        self.max_capacity = payload
+        self.max_range = range_1
+        speed = get_speed(self.max_capacity, self.max_range)
+        self.agent_speed = speed  # this param should be handles=d carefully. Makesure this is the same for the baselines
         self.agents_current_range = torch.ones((1,self.n_agents), dtype=torch.float32)*self.max_range
         self.agents_current_payload = torch.ones((1,self.n_agents), dtype=torch.float32)*self.max_capacity
 
@@ -216,7 +219,7 @@ class MRTA_Flood_Env(Env):
 
         if self.enable_topological_features:
             state = {
-                'depot': depot_normalized,
+                'depot': self.depot.reshape(1, 2),
                 'mask': self.mask,
                 'task_graph_nodes': task_graph_nodes_normalized,
                 'topo_laplacian': self.topo_laplacian, 
@@ -306,19 +309,19 @@ class MRTA_Flood_Env(Env):
         #print("Actual action: ", action)
         # self.first_dec = False
         #action = action.cpu().detach().numpy()
-        action[0] = (action[0] + 1) / 2
+        action_scaled = scale_action_values(action)
         self.step_count += 1
         reward = 0.0
         if self.step_count == 1:
-            self.initialize()
+            self.initialize(action_scaled[0], action_scaled[1])
 
         possible_tasks = np.where(self.mask==0)[0]
         number_tasks_remain = len(possible_tasks)
-        if action[0] == 1:
+        if action[2] == 1:
             #print(action[2])
-            action[0] = action[0] * 0.99
-        self.actions_vals.append(action[0])
-        action = possible_tasks[int(action[0] * number_tasks_remain)]
+            action[2] = action[2] * 0.99
+        self.actions_vals.append(action[2])
+        action = possible_tasks[int(action[2] * number_tasks_remain)]
         # if number_tasks_remain >= 2:
         #
         # else:
@@ -349,9 +352,6 @@ class MRTA_Flood_Env(Env):
             #print("working here")
             # update the  status of the node_visited that was chosen
             self.nodes_visited[action] = 1
-            #print(travel_distance / self.agent_speed)
-            
-            
             if self.time_deadlines[0, action] < torch.tensor(self.time + (travel_distance / self.agent_speed)):
                 self.deadline_passed[0, action] = 1
             else:
@@ -395,10 +395,9 @@ class MRTA_Flood_Env(Env):
                 reward = (self.n_locations - (self.n_locations - self.task_done.sum()))/self.n_locations
                 reward = reward *10
                 #reward = -((self.n_locations - 1) - self.task_done.sum())/(self.n_locations - 1)
-            #print(self.time)
             self.total_reward = reward
             self.done = True
-            dir_path = "action_val"
+            #dir_path = "action_val"
             #num_files = len([f for f in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, f))])
 
            # my_array = np.array(self.actions_vals)
@@ -414,7 +413,6 @@ class MRTA_Flood_Env(Env):
                     }
                     }
             reward = reward.item()
-
         return self.get_encoded_state(), reward, self.done, info
 
     def get_mask(self):
@@ -544,10 +542,10 @@ class MRTA_Flood_Env(Env):
         self.actions_vals = []
         if self.training:
             self.step_count = 0
-            low_bounds = np.array([-1])
-            high_bounds = np.array([1])
-            self.action_space = Box(low=low_bounds, high=high_bounds, shape=(1,))
-            self.locations = np.random.random((self.n_locations, 2)) * 5
+            low_bounds = np.array([-1,-1,-1])
+            high_bounds = np.array([1,1,1])
+            self.action_space = Box(low=low_bounds, high=high_bounds, shape=(3,))
+            self.locations = np.random.random((self.n_locations, 2))*5
             self.depot = self.locations[0, :]
             self.visited = []
             self.agent_taking_decision = 1

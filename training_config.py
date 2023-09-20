@@ -37,7 +37,7 @@ def get_config(args=None):
     parser.add_argument('--temp', type=float, default=1.00, help='softmax temp')
 
     # training algorithm parameters
-    parser.add_argument('--total_steps', type=int, default=10000000, help='Total number of steps')
+    parser.add_argument('--total_steps', type=int, default=20000000, help='Total number of steps')
     parser.add_argument('--batch_size', type=int, default=1500, help='Batch size for training')
     parser.add_argument('--n_steps', type=int, default=1500, help='Number of steps for rollout')
     parser.add_argument('--learning_rate', type=float, default=0.0001, help='Learning rate')
