@@ -8,6 +8,7 @@ Tensorboard_logger/
 tmp2/
 Results/
 .vs/
+Test_data/
 Baselines/BIGMRTA/Data
 # C extensions
 *.so
