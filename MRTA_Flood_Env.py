@@ -87,7 +87,7 @@ class MRTA_Flood_Env(Env):
         self.n_locations = n_locations
         low_bounds = np.array([-1])
         high_bounds = np.array([1])
-        self.action_space = Box(low=low_bounds, high=high_bounds, shape=(1,))
+        self.action_space = Discrete(1)#Box(low=low_bounds, high=high_bounds, shape=(1,))
         self.locations = np.random.random((n_locations, 2))*5
         self.depot = self.locations[0, :]
         self.visited = visited
@@ -230,6 +230,7 @@ class MRTA_Flood_Env(Env):
                 'task_graph_nodes': task_graph_nodes_normalized,
                 'task_graph_adjacency': task_graph_adjacency_normalized,
                 'agents_graph_nodes': agents_graph_nodes_normalized,
+                'agents_graph_adjacency':agents_graph_adjacency,
                 'agent_taking_decision': torch.tensor([[self.agent_taking_decision]]),
                 'agent_talents': torch.tensor(agent_talents).reshape(1,2),
 
@@ -306,19 +307,19 @@ class MRTA_Flood_Env(Env):
         #print("Actual action: ", action)
         # self.first_dec = False
         #action = action.cpu().detach().numpy()
-        action[0] = (action[0] + 1) / 2
+        # action[0] = (action[0] + 1) / 2
         self.step_count += 1
         reward = 0.0
         if self.step_count == 1:
             self.initialize()
 
-        possible_tasks = np.where(self.mask==0)[0]
-        number_tasks_remain = len(possible_tasks)
-        if action[0] == 1:
-            #print(action[2])
-            action[0] = action[0] * 0.99
+        # possible_tasks = np.where(self.mask==0)[0]
+        # number_tasks_remain = len(possible_tasks)
+        # if action[0] == 1:
+        #     #print(action[2])
+        #     action[0] = action[0] * 0.99
         self.actions_vals.append(action[0])
-        action = possible_tasks[int(action[0] * number_tasks_remain)]
+        # action = possible_tasks[int(action[0] * number_tasks_remain)]
         # if number_tasks_remain >= 2:
         #
         # else:

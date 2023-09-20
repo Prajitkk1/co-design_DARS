@@ -27,9 +27,9 @@ def get_config(args=None):
     parser.add_argument('--features_dim', type=int, default=128, help="Embedding length")
     parser.add_argument('--node_encoder', type=str, default='CAPAM',
                         help='Node embedding type. Available ones are [CAPAM, AM, MLP]')
-    parser.add_argument('--K', type=int, default=2, help='K value for AM')
+    parser.add_argument('--K', type=int, default=3, help='K value for AM')
     parser.add_argument('--Le', type=int, default=2, help='Le value for CAPAM')
-    parser.add_argument('--P', type=int, default=2, help='P value for CAPAM')
+    parser.add_argument('--P', type=int, default=4, help='P value for CAPAM')
     parser.add_argument('--tda', type=bool, default=False, help='use topological data too. ')
     parser.add_argument('--n_heads', type=int, default=8, help='Number of attention heads')
     parser.add_argument('--tanh_clipping', type=float, default=10, help='tanh clipping for logits')

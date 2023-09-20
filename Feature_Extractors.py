@@ -47,11 +47,11 @@ class CAPAM(nn.Module):
     def __init__(self,
                  Le=2,
                  features_dim=128,
-                 P=2,
+                 P=4,
                  node_dim=2,
-                 K=2,
+                 K=3,
                  tda=False,
-                 device: Union[torch.device, str] = "auto"
+                 device: Union[torch.device, str] = "cpu"
                  ):
         super(CAPAM, self).__init__()
         self.Le = Le
@@ -65,6 +65,8 @@ class CAPAM(nn.Module):
 
         self.W_L_1_G1 = nn.Linear(features_dim * (K + 1) * P, features_dim)
         self.W_L_1_G2 = nn.Linear(features_dim * (K + 1) * P, features_dim)
+        self.W_L_1_G3 = nn.Linear(features_dim * (K + 1) * P, features_dim)
+        self.W_L_1_G4 = nn.Linear(features_dim * (K + 1) * P, features_dim)
 
         self.W_F = nn.Linear(features_dim * P, features_dim)
         self.tda = tda
@@ -89,26 +91,43 @@ class CAPAM(nn.Module):
         # p = 3
         F0 = self.init_embed(X)
         F0_squared = torch.mul(F0[:, :, :], F0[:, :, :])
+        F0_cube= torch.mul(F0_squared[:, :, :], F0[:, :, :])
         # K = 3
 
         L_squared = torch.matmul(L, L)
+        L_cube = torch.matmul(L_squared, L)
         # L_cube = torch.matmul(L, L_squared)  torch.cat([torch.matmul(L**(i), F0)[:, :, :] for i in range(self.K+1)], dim=-1)
 
         g_L1_1 = self.W_L_1_G1(torch.cat((F0[:, :, :],
                                           torch.matmul(L, F0)[:, :, :],
                                           torch.matmul(L_squared, F0)[:, :, :],
+                                          torch.matmul(L_cube, F0)[:, :, :],
                                           ),
                                          -1))
         g_L1_2 = self.W_L_1_G2(torch.cat((F0_squared[:, :, :],
                                           torch.matmul(L, F0_squared)[:, :, :],
                                           torch.matmul(L_squared, F0_squared)[:, :, :],
+                                          torch.matmul(L_cube, F0_squared)[:, :, :],
+                                          ),
+                                         -1))
+        g_L1_3 = self.W_L_1_G3(torch.cat((F0_cube[:, :, :],
+                                          torch.matmul(L, F0_cube)[:, :, :],
+                                          torch.matmul(L_squared, F0_cube)[:, :, :],
+                                          torch.matmul(L_cube, F0_cube)[:, :, :],
+                                          ),
+                                         -1))
+
+        g_L1_4 = self.W_L_1_G4(torch.cat((F0_cube[:, :, :],
+                                          torch.matmul(L, F0_cube)[:, :, :],
+                                          torch.matmul(L_squared, F0_cube)[:, :, :],
+                                          torch.matmul(L_cube, F0_cube)[:, :, :],
                                           ),
                                          -1))
 
         # g_L1_1 = self.W_L_1_G1(torch.cat([torch.matmul(L**i, F0)[:, :, :] for i in range(self.K+1)], dim=-1))
 
         # F1 = self.normalization_1(F1)
-        F1 = torch.cat((g_L1_1, g_L1_2), -1)
+        F1 = torch.cat((g_L1_1, g_L1_2, g_L1_3, g_L1_4), -1)
         F1 = self.activ(F1)  # + F0
         # F1 = self.normalization_1(F1)
 
@@ -133,18 +152,42 @@ class CAPAM(nn.Module):
 
             F0 = self.init_embed(X)
             F0_squared = torch.mul(F0[:, :, :], F0[:, :, :])
+            F0_cube = torch.mul(F0_squared[:, :, :], F0[:, :, :])
+            # K = 3
+
             L_squared = torch.matmul(L, L)
+            L_cube = torch.matmul(L_squared, L)
+            # L_cube = torch.matmul(L, L_squared)  torch.cat([torch.matmul(L**(i), F0)[:, :, :] for i in range(self.K+1)], dim=-1)
+
             g_L1_1 = self.W_L_1_G1(torch.cat((F0[:, :, :],
                                               torch.matmul(L, F0)[:, :, :],
                                               torch.matmul(L_squared, F0)[:, :, :],
+                                              torch.matmul(L_cube, F0)[:, :, :],
                                               ),
                                              -1))
             g_L1_2 = self.W_L_1_G2(torch.cat((F0_squared[:, :, :],
                                               torch.matmul(L, F0_squared)[:, :, :],
                                               torch.matmul(L_squared, F0_squared)[:, :, :],
+                                              torch.matmul(L_cube, F0_squared)[:, :, :],
                                               ),
                                              -1))
-            F1 = torch.cat((g_L1_1, g_L1_2), -1)
+            g_L1_3 = self.W_L_1_G3(torch.cat((F0_cube[:, :, :],
+                                              torch.matmul(L, F0_cube)[:, :, :],
+                                              torch.matmul(L_squared, F0_cube)[:, :, :],
+                                              torch.matmul(L_cube, F0_cube)[:, :, :],
+                                              ),
+                                             -1))
+            g_L1_4 = self.W_L_1_G4(torch.cat((F0_cube[:, :, :],
+                                              torch.matmul(L, F0_cube)[:, :, :],
+                                              torch.matmul(L_squared, F0_cube)[:, :, :],
+                                              torch.matmul(L_cube, F0_cube)[:, :, :],
+                                              ),
+                                             -1))
+
+            # g_L1_1 = self.W_L_1_G1(torch.cat([torch.matmul(L**i, F0)[:, :, :] for i in range(self.K+1)], dim=-1))
+
+            # F1 = self.normalization_1(F1)
+            F1 = torch.cat((g_L1_1, g_L1_2, g_L1_3, g_L1_4), -1)
             F1 = self.activ(F1)  # + F0
             F_final = self.activ(self.W_F(F1))
             init_depot_embed = self.init_embed_depot(data['depot'].to(device=self.init_embed.weight.device))[:]
@@ -162,6 +205,8 @@ class CAPAM(nn.Module):
             h,  # (batch_size, graph_size, embed_dim)
             h.mean(dim=1),  # average to get embedding of graph, (batch_size, embed_dim)
         )
+
+
 class CAPAM_P(nn.Module):
     def __init__(self,
                  Le=2,

@@ -27,6 +27,101 @@ from torch.nn import functional as F
 #   TODO:
 #   Make the policy network task independent
 
+
+class MHA_Decoder(th.nn.Module):
+
+    def __init__(self,
+                 features_dim,
+                 features_extractor_kwargs,
+                 device):
+        super(MHA_Decoder, self).__init__()
+        self.project_fixed_context = th.nn.Linear(features_dim, features_dim, bias=False).to(device=device)
+        self.project_node_embeddings = th.nn.Linear(features_dim, 3 * features_dim, bias=False).to(device=device)
+        self.project_out = th.nn.Linear(features_dim, features_dim, bias=False).to(device=device)
+        self.n_heads = features_extractor_kwargs['n_heads']
+        self.tanh_clipping = features_extractor_kwargs['tanh_clipping']
+        self.mask_logits = features_extractor_kwargs['mask_logits']
+        self.temp = features_extractor_kwargs['temp']
+
+    def _one_to_many_logits(self, query, glimpse_K, glimpse_V, logit_K, mask):
+
+        batch_size, num_steps, embed_dim = query.size()
+        key_size = val_size = embed_dim // self.n_heads
+
+        # Compute the glimpse, rearrange dimensions so the dimensions are (n_heads, batch_size, num_steps, 1, key_size)
+        glimpse_Q = query.view(batch_size, num_steps, self.n_heads, 1, key_size).permute(2, 0, 1, 3, 4)
+
+        # Batch matrix multiplication to compute compatibilities (n_heads, batch_size, num_steps, graph_size)
+        compatibility = th.matmul(glimpse_Q, glimpse_K.transpose(-2, -1)) / math.sqrt(glimpse_Q.size(-1))
+        # if self.mask_inner:
+        #     assert self.mask_logits, "Cannot mask inner without masking logits"
+        #     compatibility[mask[None, :, :, None, :].expand_as(compatibility)] = -math.inf
+
+        # Batch matrix multiplication to compute heads (n_heads, batch_size, num_steps, val_size)
+        heads = th.matmul(th.softmax(compatibility, dim=-1), glimpse_V)
+        # heads = th.matmul(th.softmax(compatibility, dim=-3), glimpse_V)
+        # heads = th.matmul(compatibility, glimpse_V)
+
+        # Project to get glimpse/updated context node embedding (batch_size, num_steps, embedding_dim)
+        glimpse = self.project_out(
+            heads.permute(1, 2, 3, 0, 4).contiguous().view(-1, num_steps, 1, self.n_heads * val_size))
+
+        # Now projecting the glimpse is not needed since this can be absorbed into project_out
+        # final_Q = self.project_glimpse(glimpse)
+        final_Q = glimpse
+        # Batch matrix multiplication to compute logits (batch_size, num_steps, graph_size)
+        # logits = 'compatibility'
+        logits = (th.matmul(final_Q, logit_K.transpose(-2, -1)).squeeze(-2) / math.sqrt(final_Q.size(-1))) ### steve has made a change here (normalizing)
+
+        ## From the logits compute the probabilities by clipping, masking and softmax
+        # if self.tanh_clipping > 0:
+        #     logits = th.tanh(logits) * self.tanh_clipping
+        if self.mask_logits:
+            logits[th.tensor(mask[:,:,:].reshape(logits.shape), dtype=th.bool)] = -math.inf
+        # if mask[0, 0,0] == 1:
+        #     logits[:,:,0] = -math.inf
+            # print("depot masked")
+        # print("Shape of logits: ", logits.shape)
+        return logits
+
+    def _make_heads(self, v, num_steps=None):
+        assert num_steps is None or v.size(1) == 1 or v.size(1) == num_steps
+
+        return (
+            v.contiguous().view(v.size(0), v.size(1), v.size(2), self.n_heads, -1)
+            .expand(v.size(0), v.size(1) if num_steps is None else num_steps, v.size(2), self.n_heads, -1)
+            .permute(3, 0, 1, 2, 4)  # (n_heads, batch_size, num_steps, graph_size, head_dim)
+        )
+
+
+    def _get_attention_node_data(self, fixed):
+
+        # TSP or VRP without split delivery
+        return fixed.glimpse_key, fixed.glimpse_val, fixed.logit_key
+
+    def forward(self, latent_pi, features, obs, num_steps=1):
+        fixed_context = self.project_fixed_context(latent_pi)
+
+        # The projection of the node embeddings for the attention is calculated once up front
+        glimpse_key_fixed, glimpse_val_fixed, logit_key_fixed = \
+            self.project_node_embeddings(features[:, None, :, :]).chunk(3, dim=-1)
+
+        # No need to rearrange key for logit as there is a single head
+        fixed_attention_node_data = (
+            self._make_heads(glimpse_key_fixed, num_steps),
+            self._make_heads(glimpse_val_fixed, num_steps),
+            logit_key_fixed.contiguous()
+        )
+        fixed = AttentionModelFixed(features, fixed_context, *fixed_attention_node_data)
+        glimpse_K, glimpse_V, logit_K = self._get_attention_node_data(fixed)
+
+        query = fixed.context_node_projected #+ latent_pi
+        log_p = self._one_to_many_logits(query, glimpse_K, glimpse_V, logit_K, obs['mask'])
+
+        log_p = th.log_softmax(log_p / self.temp, dim=-1)
+
+        return log_p
+
 def dicttuple(cls: tuple):
     """Extends a tuple class with methods for the dict constructor."""
 
@@ -143,7 +238,9 @@ class ActorCriticGCAPSPolicy(BasePolicy):
         self.tanh_clipping = features_extractor_kwargs['tanh_clipping']
         self.mask_logits = features_extractor_kwargs['mask_logits']
         self.temp = features_extractor_kwargs['temp']
-        self._build()
+        self.action_decoder = MHA_Decoder(features_dim=features_dim,
+                                               features_extractor_kwargs=features_extractor_kwargs, device=device)
+        # self._build()
         self.batch_norm = th.nn.BatchNorm1d(128)
         self.network = th.nn.Sequential(
             th.nn.Linear(features_dim, 64),
@@ -192,9 +289,10 @@ class ActorCriticGCAPSPolicy(BasePolicy):
         latent_pi, values = self.context_extractor(graph_embed, obs)
        # print("aaaa")
        # print(latent_pi)
-        latent_pi = self.forward_actor(latent_pi)
+        mean_actions = self.action_decoder(latent_pi, features, obs)
+        # latent_pi = self.forward_actor(latent_pi)
        # print(latent_pi)
-        distribution = self._get_action_dist_from_latent(latent_pi)
+        distribution = self._get_action_dist_from_latent(mean_actions)
         actions = distribution.get_actions(deterministic=deterministic)
 
         log_prob = distribution.log_prob(actions)
@@ -208,7 +306,8 @@ class ActorCriticGCAPSPolicy(BasePolicy):
         :return: Action distribution
         """
         
-        mean_actions = self.action_net(latent_pi)
+        # mean_actions = self.action_net(latent_pi)
+        mean_actions = latent_pi
 
         if isinstance(self.action_dist, DiagGaussianDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std)
@@ -235,7 +334,7 @@ class ActorCriticGCAPSPolicy(BasePolicy):
         return self._get_action_dist_from_latent(latent_pi)
 
     def context_extractor(self, graph_embed, observations):
-        device = torch.device('cuda:0')
+        device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
         agent_taking_decision = (observations['agent_taking_decision'].view(-1).to(torch.int64)).to(device=device)
         n_data = agent_taking_decision.shape[0]
         observations['agents_graph_nodes'] = observations['agents_graph_nodes'].to(device)
@@ -251,7 +350,7 @@ class ActorCriticGCAPSPolicy(BasePolicy):
 
     def forward_actor(self, obs):
         obs = obs.view(-1, 128)
-        obs = self.bo1(obs)
+        # obs = self.bo1(obs)
         x = self.network(obs)
         #x = self.bo2(x)
         trainable_part = self.trainable_output(x)
