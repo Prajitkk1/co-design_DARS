@@ -308,6 +308,7 @@ class MRTA_Flood_Env(Env):
         # self.first_dec = False
         #action = action.cpu().detach().numpy()
         # action[0] = (action[0] + 1) / 2
+
         self.step_count += 1
         reward = 0.0
         if self.step_count == 1:
@@ -318,15 +319,8 @@ class MRTA_Flood_Env(Env):
         # if action[0] == 1:
         #     #print(action[2])
         #     action[0] = action[0] * 0.99
-        self.actions_vals.append(action[0])
-        # action = possible_tasks[int(action[0] * number_tasks_remain)]
-        # if number_tasks_remain >= 2:
-        #
-        # else:
-        #     action = self.active_tasks[1]
-        #print(number_tasks_remain)
+        self.actions_vals.append(action)
 
-        #print(self.agent_taking_decision, action)
         agent_taking_decision = self.agent_taking_decision  # id of the agent taking action
         current_location_id = self.current_location_id  # current location id of the robot taking decision
         self.total_length = self.total_length + 1

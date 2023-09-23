@@ -119,7 +119,7 @@ class MHA_Decoder(th.nn.Module):
         log_p = self._one_to_many_logits(query, glimpse_K, glimpse_V, logit_K, obs['mask'])
 
         log_p = th.log_softmax(log_p / self.temp, dim=-1)
-
+        #print(log_p.shape, "logppppp")
         return log_p
 
 def dicttuple(cls: tuple):
@@ -275,26 +275,18 @@ class ActorCriticGCAPSPolicy(BasePolicy):
     def evaluate_actions(self, obs: th.Tensor, actions: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
         features, graph_embed = self.extract_features(obs)
         latent_pi, values = self.context_extractor(graph_embed, obs)
-
-        latent_pi = self.forward_actor(latent_pi)
-        #print(latent_pi)
-        distribution = self._get_action_dist_from_latent(latent_pi)
+        mean_actions = self.action_decoder(latent_pi, features, obs).squeeze(1)
+        distribution = self._get_action_dist_from_latent(mean_actions)
         log_prob = distribution.log_prob(actions)
         return values, log_prob, distribution.entropy() 
 
 
     def forward(self, obs, deterministic=False,  *args, **kwargs):
         features, graph_embed = self.extract_features(obs)
-
         latent_pi, values = self.context_extractor(graph_embed, obs)
-       # print("aaaa")
-       # print(latent_pi)
-        mean_actions = self.action_decoder(latent_pi, features, obs)
-        # latent_pi = self.forward_actor(latent_pi)
-       # print(latent_pi)
+        mean_actions = self.action_decoder(latent_pi, features, obs).squeeze(1)
         distribution = self._get_action_dist_from_latent(mean_actions)
         actions = distribution.get_actions(deterministic=deterministic)
-
         log_prob = distribution.log_prob(actions)
         return actions, values, log_prob
 
