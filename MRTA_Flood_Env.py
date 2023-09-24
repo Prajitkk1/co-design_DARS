@@ -50,20 +50,22 @@ action_0_bounds = {
             }
 
 def scale_action_values(action_values):
-    assert len(action_values) == 1, "The input array should have 3 values."
+    assert len(action_values) == 3, "The input array should have 3 values."
     scaled_values = np.zeros_like(action_values, dtype=float)
-
+    action_values[0] = np.clip(action_values[0], -1, 1)
+    action_values[1] = np.clip(action_values[1], -1, 1)
+    
     # Scale the first value to the range 2 to 7 and round to the nearest integer.
     scaled_values[0] = round(((action_values[0] + 1) / 2) * (7 - 2) + 2)
 
     # Get the min and max values for the second action based on the scaled first action value
+    #print(scaled_values[0])
     min_val, max_val = action_0_bounds[scaled_values[0]]
 
     # Scale the second value to the retrieved range.
     scaled_values[1] = ((action_values[1] + 1) / 2) * (max_val - min_val) + min_val
 
-    # Scale the third value to the range 0 to 1 (no change required since it's already in this range).
-    scaled_values[2] = (action_values[2] + 1) / 2
+    scaled_values[2] = action_values[2]
 
     return scaled_values
      
@@ -85,9 +87,8 @@ class MRTA_Flood_Env(Env):
         # It would be great if we can force the agent to choose not-done task
         super(MRTA_Flood_Env, self).__init__()
         self.n_locations = n_locations
-        low_bounds = np.array([-1])
-        high_bounds = np.array([1])
-        self.action_space = Discrete(1)#Box(low=low_bounds, high=high_bounds, shape=(1,))
+
+        self.action_space =  [Box(-1,1,(2,), dtype=np.float64), Discrete(1)]
         self.locations = np.random.random((n_locations, 2))*5
         self.depot = self.locations[0, :]
         self.visited = visited
@@ -112,8 +113,8 @@ class MRTA_Flood_Env(Env):
 
         self.total_reward = 0.0
         self.total_length = 0
-        self.max_capacity = 5
-        self.max_range = 5.68
+        self.max_capacity = 4
+        self.max_range = 9.58
 
         self.time_deadlines = (torch.tensor(np.random.random((1, n_locations)))*.3 + .7)*1
         self.time_deadlines[0, 0] = 1000000
@@ -183,14 +184,15 @@ class MRTA_Flood_Env(Env):
 
         
 
-    def initialize(self):
-        self.max_capacity = 5
-        self.max_range = 8.13
-        #speed = get_speed(self.max_capacity, self.max_range)
-        self.agent_speed = 23.6  # this param should be handles=d carefully. Makesure this is the same for the baselines, 23.7 is for the f450 baselines
-
+    def initialize(self, payload, range_1):
+        self.max_capacity = payload
+        self.max_range = range_1
+        speed = get_speed(self.max_capacity, self.max_range)
+        self.agent_speed = speed  # this param should be handles=d carefully. Makesure this is the same for the baselines
+        print(self.max_capacity, self.max_range, self.agent_speed)
         self.agents_current_range = torch.ones((1,self.n_agents), dtype=torch.float32)*self.max_range
         self.agents_current_payload = torch.ones((1,self.n_agents), dtype=torch.float32)*self.max_capacity
+
 
     def get_state(self):
         # include locations visited into the state
@@ -306,27 +308,17 @@ class MRTA_Flood_Env(Env):
         #action = self.active_tasks[action]
         #print("Actual action: ", action)
         # self.first_dec = False
-        #action = action.cpu().detach().numpy()
+        action = action.cpu().detach().numpy()
         # action[0] = (action[0] + 1) / 2
+        print(action)
+
+        action_scaled = scale_action_values(action)
+        if self.step_count == 0:
+            self.initialize(action_scaled[0], action_scaled[1])
+        action = int(action[2])
         self.step_count += 1
         reward = 0.0
-        if self.step_count == 1:
-            self.initialize()
 
-        # possible_tasks = np.where(self.mask==0)[0]
-        # number_tasks_remain = len(possible_tasks)
-        # if action[0] == 1:
-        #     #print(action[2])
-        #     action[0] = action[0] * 0.99
-        self.actions_vals.append(action[0])
-        # action = possible_tasks[int(action[0] * number_tasks_remain)]
-        # if number_tasks_remain >= 2:
-        #
-        # else:
-        #     action = self.active_tasks[1]
-        #print(number_tasks_remain)
-
-        #print(self.agent_taking_decision, action)
         agent_taking_decision = self.agent_taking_decision  # id of the agent taking action
         current_location_id = self.current_location_id  # current location id of the robot taking decision
         self.total_length = self.total_length + 1
@@ -381,8 +373,7 @@ class MRTA_Flood_Env(Env):
             self.nodes_visited[deadlines_passed_ids[:, 1], 0] = 1
         # print("Active tasks before update: ", self.active_tasks)
         self.active_tasks = ((self.nodes_visited == 0).nonzero())[0]
-        # print("Active tasks after update: ", self.active_tasks)
-        #print(self.active_tasks)
+
 
         self.available_tasks = (self.time_start <= self.time).to(torch.float32).T # making new tasks available
 
@@ -399,15 +390,6 @@ class MRTA_Flood_Env(Env):
             #print(self.time)
             self.total_reward = reward
             self.done = True
-            dir_path = "action_val"
-            #num_files = len([f for f in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, f))])
-
-           # my_array = np.array(self.actions_vals)
-
-            # Save the array to a .npy file
-            #np.save(os.path.join(dir_path, f'{num_files + 1}.npy'), my_array)
-            #print("dandanakka done")
-            #print(self.task_done.sum())
             info = {"is_success": self.done,
                     "episode": {
                         "r": self.total_reward,
@@ -545,9 +527,6 @@ class MRTA_Flood_Env(Env):
         self.actions_vals = []
         if self.training:
             self.step_count = 0
-            low_bounds = np.array([-1])
-            high_bounds = np.array([1])
-            self.action_space = Box(low=low_bounds, high=high_bounds, shape=(1,))
             self.locations = np.random.random((self.n_locations, 2)) * 5
             self.depot = self.locations[0, :]
             self.visited = []

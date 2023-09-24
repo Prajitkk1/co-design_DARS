@@ -25,13 +25,14 @@ def as_tensor(observation):
     for key, obs in observation.items():
         observation[key] = torch.tensor(obs)
     return observation
-n_envs = 10 # Number of environments you want to run in parallel, 16 for training, 1 for test
+n_envs = 1 # Number of environments you want to run in parallel, 16 for training, 1 for test
 torch.manual_seed(42)
 torch.cuda.manual_seed_all(42)
 #log_dir = "/results"
 #os.makedirs(log_dir, exist_ok=True)
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.results_plotter import load_results, ts2xy, plot_results
+
 
 def make_env(config, seed, log_dir):
     def _init():
@@ -49,7 +50,7 @@ def make_env(config, seed, log_dir):
         return env
     return _init
 config = get_config()
-test = False  # if this is set as true, then make sure the test data is generated.
+test = True  # if this is set as true, then make sure the test data is generated.
 # Otherwise, run the test_env_generator script
 config.device = torch.device("cuda:0" if config.use_cuda else "cpu")
 #config.device = torch.device( "cpu")
@@ -200,31 +201,30 @@ if __name__ == '__main__':
     envs = [make_env(config, seed=i, log_dir = log_dir) for i in range(n_envs)]
     env = SubprocVecEnv(envs)
     env = VecMonitor(env)
-    #model = PPO.load(save_model_loc, env=env)
     model = PPO(
      
-    ActorCriticGCAPSPolicy,
-        env,
-        gamma=config.gamma,
-        verbose=1,
-        n_epochs=config.n_epochs,
-        batch_size=config.batch_size,
-        tensorboard_log=tb_logger_location,
-        # create_eval_env=True,
-        n_steps=config.n_steps,
-        learning_rate= 0.0001,
-        policy_kwargs = policy_kwargs,
-        ent_coef=config.ent_coef,
-        vf_coef=config.val_coef,
-        device=config.device
-    )
+        ActorCriticGCAPSPolicy,
+            env,
+            gamma=config.gamma,
+            verbose=1,
+            n_epochs=config.n_epochs,
+            batch_size=config.batch_size,
+            tensorboard_log=tb_logger_location,
+            # create_eval_env=True,
+            n_steps=config.n_steps,
+            learning_rate= 0.0001,
+            policy_kwargs = policy_kwargs,
+            ent_coef=config.ent_coef,
+            vf_coef=config.val_coef,
+            device=config.device
+        )
 
     reward_threshold = 10.005
     #save_path = save_model_loc
     callback = SaveOnBestTrainingRewardCallback(check_freq=1000, log_dir=log_dir)
 
     if not test:
-        model.learn(total_timesteps=config.total_steps,reset_num_timesteps=False, callback=callback)
+        model.learn(total_timesteps=config.total_steps,reset_num_timesteps=True, callback=callback)
 
         obs = env.reset()
         model.save(save_model_loc)
