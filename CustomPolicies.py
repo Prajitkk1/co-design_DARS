@@ -198,6 +198,9 @@ class ActorCriticGCAPSPolicy(BasePolicy):
         value_net_net = [th.nn.Linear(features_dim, features_dim, bias=True),
                          th.nn.Linear(features_dim, 1, bias=True)]
         self.value_net = th.nn.Sequential(*value_net_net).to(device=device)
+        value_net_net1 = [th.nn.Linear(2, 6, bias=True),
+                         th.nn.Linear(6, 1, bias=True)]
+        self.value_net1 = th.nn.Sequential(*value_net_net1).to(device=device)
         if features_extractor_kwargs['feature_extractor'] == "CAPAM":
             from Feature_Extractors import CAPAM
             self.features_extractor = CAPAM(
@@ -249,7 +252,8 @@ class ActorCriticGCAPSPolicy(BasePolicy):
         self.final_output = th.nn.Sigmoid()
         # non-trainable part
         self.non_trainable_output_weights = th.nn.Parameter(torch.zeros(2, features_dim), requires_grad=False)
-        self.non_trainable_output_bias = th.nn.Parameter(torch.zeros(2), requires_grad=True)
+        self.non_trainable_output_bias = torch.nn.Parameter(torch.full((2,), 0.5), requires_grad=True)
+
         param_groups = [
             {
                 'params': [
@@ -261,11 +265,11 @@ class ActorCriticGCAPSPolicy(BasePolicy):
             },
             {
                 'params': [self.non_trainable_output_bias],
-                'lr': 0.001  
+                'lr': 0.003  
             },
             {
                 'params': [self.log_std],
-                'lr': 0.1  
+                'lr': 0.001
             }
         ]
 
@@ -288,8 +292,10 @@ class ActorCriticGCAPSPolicy(BasePolicy):
         features, graph_embed = self.extract_features(obs)
         latent_pi, values = self.context_extractor(graph_embed, obs)
         logits = self.action_decoder(latent_pi, features, obs).squeeze(1)
+        #print(logits.shape, "logits shape evaluate")
         non_trainable_part = F.linear(latent_pi, self.non_trainable_output_weights, self.non_trainable_output_bias)
         morphology = self.final_output(non_trainable_part).squeeze(1)
+        #print(morphology.shape, "non trainable shape evaluate")
         distribution = self._get_action_dist_from_latent(morphology, logits)
         log_prob = distribution.log_prob(actions)
         return values, log_prob, distribution.entropy() 
@@ -299,7 +305,6 @@ class ActorCriticGCAPSPolicy(BasePolicy):
         features, graph_embed = self.extract_features(obs)
         latent_pi, values = self.context_extractor(graph_embed, obs)
         logits = self.action_decoder(latent_pi, features, obs).squeeze(1)
-
         non_trainable_part = F.linear(latent_pi, self.non_trainable_output_weights, self.non_trainable_output_bias)
         morphology = self.final_output(non_trainable_part).squeeze(1)
         distribution = self._get_action_dist_from_latent(morphology, logits)
@@ -332,7 +337,9 @@ class ActorCriticGCAPSPolicy(BasePolicy):
         context = self.full_context_nn(
                     th.cat((observations['agent_talents'],graph_embed[:, None, :],self.agent_decision_context(agent_taking_decision_state),
                             self.agent_context(observations['agents_graph_nodes'].to(torch.float32)).sum(1)[:,None,:]), -1)).to(device)
-        return context, self.value_net(context)
+        #print(observations['agent_talents'].shape)
+        talent_values = self.value_net1(observations['agent_talents'])
+        return context, self.value_net(context)+talent_values
 
 
     def predict_values(self, obs: th.Tensor) -> th.Tensor:
@@ -384,16 +391,23 @@ class HybridDistribution(Distribution):
 
     def log_prob(self, actions: th.Tensor) -> th.Tensor:
         continuous_actions, discrete_action = actions[:, :2], actions[:, 2]
+        #print(["in log prob", continuous_actions.shape, discrete_action.shape])
         continuous_log_prob = self.continuous_distribution.log_prob(continuous_actions)
-        continuous_log_prob = sum_independent_dims(continuous_log_prob)
+        #print(["after log_prob", continuous_log_prob.shape])
+        continuous_log_prob = sum_independent_dims(continuous_log_prob) * 2
         discrete_log_prob = self.discrete_distribution.log_prob(discrete_action)
+        #print(["log probs end", continuous_log_prob.shape, discrete_log_prob.shape ])
         return continuous_log_prob + discrete_log_prob
 
 
 
 
+
     def sample(self) -> th.Tensor:
-        continuous_actions = self.continuous_distribution.sample().squeeze(1) 
+        #print(self.continuous_distribution.sample().shape)
+        #continuous_actions = self.continuous_distribution.sample().squeeze(1) 
+        continuous_actions = self.continuous_distribution.mean.squeeze(1)           #deterministic only for continuous
+        continuous_actions = torch.clamp(continuous_actions, min=0, max=1)
         discrete_action = self.discrete_distribution.sample().reshape(-1,1)
         return th.cat([continuous_actions, discrete_action], dim=1)
 

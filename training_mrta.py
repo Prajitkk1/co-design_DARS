@@ -25,7 +25,7 @@ def as_tensor(observation):
     for key, obs in observation.items():
         observation[key] = torch.tensor(obs)
     return observation
-n_envs = 1 # Number of environments you want to run in parallel, 16 for training, 1 for test
+n_envs = 15 # Number of environments you want to run in parallel, 16 for training, 1 for test
 torch.manual_seed(42)
 torch.cuda.manual_seed_all(42)
 #log_dir = "/results"
@@ -50,7 +50,7 @@ def make_env(config, seed, log_dir):
         return env
     return _init
 config = get_config()
-test = True  # if this is set as true, then make sure the test data is generated.
+test = False  # if this is set as true, then make sure the test data is generated.
 # Otherwise, run the test_env_generator script
 config.device = torch.device("cuda:0" if config.use_cuda else "cpu")
 #config.device = torch.device( "cpu")

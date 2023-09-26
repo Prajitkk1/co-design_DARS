@@ -15,7 +15,7 @@ from topology import *
 import scipy.sparse as sp
 from persim import wasserstein
 from scipy.io import loadmat
-
+import csv
 from scipy.interpolate import griddata
 import math
 import os 
@@ -52,18 +52,18 @@ action_0_bounds = {
 def scale_action_values(action_values):
     assert len(action_values) == 3, "The input array should have 3 values."
     scaled_values = np.zeros_like(action_values, dtype=float)
-    action_values[0] = np.clip(action_values[0], -1, 1)
-    action_values[1] = np.clip(action_values[1], -1, 1)
+    action_values[0] = np.clip(action_values[0], 0, 1)
+    action_values[1] = np.clip(action_values[1], 0, 1)
     
     # Scale the first value to the range 2 to 7 and round to the nearest integer.
-    scaled_values[0] = round(((action_values[0] + 1) / 2) * (7 - 2) + 2)
+    scaled_values[0] = round(action_values[0] * (7 - 2) + 2)
 
     # Get the min and max values for the second action based on the scaled first action value
     #print(scaled_values[0])
-    min_val, max_val = action_0_bounds[scaled_values[0]]
+    #min_val, max_val = action_0_bounds[scaled_values[0]]
 
     # Scale the second value to the retrieved range.
-    scaled_values[1] = ((action_values[1] + 1) / 2) * (max_val - min_val) + min_val
+    scaled_values[1] = action_values[1] * (15.1 - 4.16) + 4.16
 
     scaled_values[2] = action_values[2]
 
@@ -88,7 +88,7 @@ class MRTA_Flood_Env(Env):
         super(MRTA_Flood_Env, self).__init__()
         self.n_locations = n_locations
 
-        self.action_space =  [Box(-1,1,(2,), dtype=np.float64), Discrete(1)]
+        self.action_space =  [Box(0,1,(2,), dtype=np.float64), Discrete(1)]
         self.locations = np.random.random((n_locations, 2))*5
         self.depot = self.locations[0, :]
         self.visited = visited
@@ -189,9 +189,13 @@ class MRTA_Flood_Env(Env):
         self.max_range = range_1
         speed = get_speed(self.max_capacity, self.max_range)
         self.agent_speed = speed  # this param should be handles=d carefully. Makesure this is the same for the baselines
-        print(self.max_capacity, self.max_range, self.agent_speed)
+        #print(self.max_capacity, self.max_range, self.agent_speed)
         self.agents_current_range = torch.ones((1,self.n_agents), dtype=torch.float32)*self.max_range
         self.agents_current_payload = torch.ones((1,self.n_agents), dtype=torch.float32)*self.max_capacity
+        saving = [self.max_capacity, self.max_range, self.agent_speed]
+        with open('data.csv', mode='a', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(saving)
 
 
     def get_state(self):
@@ -214,7 +218,7 @@ class MRTA_Flood_Env(Env):
         task_graph_nodes_normalized = normalize(task_graph_nodes)
         task_graph_adjacency_normalized = normalize(task_graph_adjacency)
         agents_graph_nodes_normalized = normalize(agents_graph_nodes)
-        #agent_taking_decision_normalized = normalize(self.agent_taking_decision)
+
 
         if self.enable_topological_features:
             state = {
@@ -303,18 +307,23 @@ class MRTA_Flood_Env(Env):
         return topo_laplacian_k_2
 
     def step(self, action):
-        # print("Time: ", self.time)
-        # print("New action taken from the available list: ", action)
-        #action = self.active_tasks[action]
-        #print("Actual action: ", action)
-        # self.first_dec = False
-        action = action.cpu().detach().numpy()
-        # action[0] = (action[0] + 1) / 2
-        print(action)
-
         action_scaled = scale_action_values(action)
+        #print(action_scaled, "scaled actions")
         if self.step_count == 0:
-            self.initialize(action_scaled[0], action_scaled[1])
+            for action_0_value, (lower, upper) in self.action_0_bounds.items():
+                if action_scaled[0] == action_0_value:
+                    if action_scaled[1] < lower:
+                        reward = lower - action_scaled[1]  # Calculate the difference with the lower limit
+                    elif action_scaled[1] > upper:
+                        reward = action_scaled[1] - upper  # Calculate the difference with the upper limit
+                    else:
+                        continue  # If action_1 is within the bounds, skip to the next iteration
+                    done = True
+                    obs = self.get_encoded_state()
+                    #reward = min(reward_low, reward_high)
+                    #print(["reward on failure: ", -abs(reward)])
+                    return obs, -abs(reward), done, {}  # Return the negative absolute reward value
+                self.initialize(action_scaled[0], action_scaled[1])
         action = int(action[2])
         self.step_count += 1
         reward = 0.0
