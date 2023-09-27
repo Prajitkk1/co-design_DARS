@@ -25,7 +25,7 @@ def as_tensor(observation):
     for key, obs in observation.items():
         observation[key] = torch.tensor(obs)
     return observation
-n_envs = 15 # Number of environments you want to run in parallel, 16 for training, 1 for test
+n_envs = 20 # Number of environments you want to run in parallel, 16 for training, 1 for test
 torch.manual_seed(42)
 torch.cuda.manual_seed_all(42)
 #log_dir = "/results"
@@ -108,6 +108,7 @@ class SaveOnBestTrainingRewardCallback(BaseCallback):
                     self.model.save(self.save_path)
 
         return True
+
 
 
 
@@ -206,30 +207,31 @@ if __name__ == '__main__':
     envs = [make_env(config, seed=i, log_dir = log_dir) for i in range(n_envs)]
     env = SubprocVecEnv(envs)
     env = VecMonitor(env)
-    #model = PPO(
-    # 
-    #    ActorCriticGCAPSPolicy,
-    #        env,
-    #        gamma=config.gamma,
-    #        verbose=1,
-    #        n_epochs=config.n_epochs,
-    #        batch_size=config.batch_size,
-    #        tensorboard_log=tb_logger_location,
+    model = PPO(
+     
+        ActorCriticGCAPSPolicy,
+            env,
+            gamma=config.gamma,
+            verbose=1,
+            n_epochs=config.n_epochs,
+            batch_size=config.batch_size,
+            tensorboard_log=tb_logger_location,
             # create_eval_env=True,
-    #        n_steps=config.n_steps,
-    #        learning_rate= 0.0001,
-    #        policy_kwargs = policy_kwargs,
-    #        ent_coef=config.ent_coef,
-    #        vf_coef=config.val_coef,
-    #        device=config.device
-    #    )
-
+            n_steps=config.n_steps,
+           learning_rate= 0.0001,
+            policy_kwargs = policy_kwargs,
+            ent_coef=config.ent_coef,
+            vf_coef=config.val_coef,
+            clip_range_vf = 0.2,
+            device=config.device
+        )
+    #model = PPO.load(save_model_loc, env=env)
     reward_threshold = 10.005
     #save_path = save_model_loc
-    callback = SaveOnBestTrainingRewardCallback(check_freq=1000, log_dir=log_dir)
-    model = PPO.load(save_model_loc, env=env)
+    callback = SaveOnBestTrainingRewardCallback(check_freq=1500, log_dir=log_dir)
+
     if not test:
-        model.learn(total_timesteps=config.total_steps,reset_num_timesteps=False, callback=callback)
+        model.learn(total_timesteps=config.total_steps,reset_num_timesteps=True, callback=callback)
 
         obs = env.reset()
         model.save(save_model_loc)
@@ -273,6 +275,7 @@ if __name__ == '__main__':
                     for i in range(1000000):
                             model.policy.set_training_mode(False)
                             action = model.policy._predict(obs)
+                            action = action.cpu().detach().numpy()
                             obs, reward, done, _ = env.step(action)
                             obs = as_tensor(obs)
                             if done:

@@ -70,9 +70,7 @@ def update_learning_rate(optimizer: th.optim.Optimizer, learning_rate: float) ->
     :param optimizer:
     :param learning_rate:
     """
-    #print(optimizer)
     for param_group in optimizer.param_groups[:1]:
-        #print(param_group)
         param_group["lr"] = learning_rate
 
 

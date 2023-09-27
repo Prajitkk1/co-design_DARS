@@ -49,7 +49,7 @@ action_0_bounds = {
                 7: (4.16, 6.80)
             }
 
-def scale_action_values1(action_values):
+def scale_action_values(action_values):
     assert len(action_values) == 3, "The input array should have 3 values."
     scaled_values = np.zeros_like(action_values, dtype=float)
     action_values[0] = np.clip(action_values[0], 0, 1)
@@ -68,24 +68,6 @@ def scale_action_values1(action_values):
     scaled_values[2] = action_values[2]
 
     return scaled_values
-
-
-def scale_action_values(action_values):
-    assert len(action_values) == 3, "The input array should have 3 values."
-    scaled_values = np.zeros_like(action_values, dtype=float)
-
-    # Scale the first value to the range 2 to 7 and round to the nearest integer.
-    scaled_values[0] = round(((action_values[0])) * (7 - 2) + 2)
-
-    # Get the min and max values for the second action based on the scaled first action value
-    min_val, max_val = action_0_bounds[scaled_values[0]]
-
-    # Scale the second value to the retrieved range.
-    scaled_values[1] = ((action_values[1])) * (max_val - min_val) + min_val
-
-    scaled_values[2] = action_values[2]
-
-    return scaled_values
      
 class MRTA_Flood_Env(Env):
     def __init__(self,
@@ -99,14 +81,16 @@ class MRTA_Flood_Env(Env):
                  n_initial_tasks = 30,
                  display = False,
                  enable_topological_features = False,
-                 training = True
+                 training = True,
+                 with_morphology=False
                  ):
         # Action will be choosing the next task. (Can be a task that is alraedy done)
         # It would be great if we can force the agent to choose not-done task
         super(MRTA_Flood_Env, self).__init__()
         self.n_locations = n_locations
+        self.with_morphology = with_morphology
 
-        self.action_space =  [Box(0,1,(2,), dtype=np.float64), Discrete(1)]
+        self.action_space =  [Box(-1,1,(2,), dtype=np.float64), Discrete(1)]
         self.locations = np.random.random((n_locations, 2))*5
         self.depot = self.locations[0, :]
         self.visited = visited
@@ -131,8 +115,8 @@ class MRTA_Flood_Env(Env):
 
         self.total_reward = 0.0
         self.total_length = 0
-        self.max_capacity = 4
-        self.max_range = 9.58
+        self.max_capacity = 5
+        self.max_range = 5.68
 
         self.time_deadlines = (torch.tensor(np.random.random((1, n_locations)))*.3 + .7)*1
         self.time_deadlines[0, 0] = 1000000
@@ -155,7 +139,7 @@ class MRTA_Flood_Env(Env):
 
         self.task_graph_node_dim = self.generate_task_graph()[0].shape[1]
         self.agent_node_dim = self.generate_agents_graph()[0].shape[1]
-        self.talent_beginned = [0.5,0.5]
+ 
 
         self.step_count = 0
         self.action_0_bounds = {
@@ -166,6 +150,7 @@ class MRTA_Flood_Env(Env):
                 6: (4.82, 7.99),
                 7: (4.16, 6.80)
             }
+        self.talent_beginned = [0.5,0.5]
         if self.enable_topological_features:
             self.observation_space = Dict(
                 dict(
@@ -181,7 +166,6 @@ class MRTA_Flood_Env(Env):
             topo_laplacian = self.get_topo_laplacian(state)
             state["topo_laplacian"] = topo_laplacian
             self.topo_laplacian = topo_laplacian
-
         else:
             self.observation_space = Dict(
                 dict(
@@ -203,7 +187,6 @@ class MRTA_Flood_Env(Env):
         self.mask[0,0] = 1
 
         
-
     def initialize(self, payload, range_1):
         self.max_capacity = payload
         self.max_range = range_1
@@ -239,6 +222,7 @@ class MRTA_Flood_Env(Env):
         task_graph_adjacency_normalized = normalize(task_graph_adjacency)
         agents_graph_nodes_normalized = normalize(agents_graph_nodes)
         step = np.array([self.step_count])
+        #agent_taking_decision_normalized = normalize(self.agent_taking_decision)
 
         if self.enable_topological_features:
             state = {
@@ -328,7 +312,18 @@ class MRTA_Flood_Env(Env):
         return topo_laplacian_k_2
 
     def step(self, action):
+        # print("Time: ", self.time)
+        # print("New action taken from the available list: ", action)
+        #action = self.active_tasks[action]
+        #print("Actual action: ", action)
+        # self.first_dec = False
+        #action = action.cpu().detach().numpy()
+        # action[0] = (action[0] + 1) / 2
+        #print(action)
+        #if self.step_count>0:
+        #    print(["talent beginned", self.talent_beginned, "action got", action, "step", self.step_count])
         action_scaled = scale_action_values(action)
+        
         if self.step_count == 0:
             self.talent_beginned = action[:2]
             for action_0_value, (lower, upper) in self.action_0_bounds.items():
@@ -341,8 +336,27 @@ class MRTA_Flood_Env(Env):
                         continue  # If action_1 is within the bounds, skip to the next iteration
                     done = True
                     obs = self.get_encoded_state()
+                    #reward = min(reward_low, reward_high)
+                    #print(["reward on failure: ", -abs(reward)])
                     return obs, -abs(reward), done, {}  # Return the negative absolute reward value
                 self.initialize(action_scaled[0], action_scaled[1])
+        elif self.step_count>0:
+            for action_0_value, (lower, upper) in self.action_0_bounds.items():
+                if action_scaled[0] == action_0_value:
+                    if action_scaled[1] < lower:
+                        reward = lower - action_scaled[1]  # Calculate the difference with the lower limit
+                    elif action_scaled[1] > upper:
+                        reward = action_scaled[1] - upper  # Calculate the difference with the upper limit
+                    else:
+                        continue  # If action_1 is within the bounds, skip to the next iteration
+                    done = True
+                    obs = self.get_encoded_state()
+                    reward_com = (self.n_locations - (self.n_locations - self.task_done.sum()))/self.n_locations
+                    reward_com = (reward_com *5).cpu().detach().numpy()
+                    #print(type(reward_com))
+                    #reward = min(reward_low, reward_high)
+                    #print(["reward on failure: ", -abs(reward)])
+                    return obs, -abs(reward)+reward_com, done, {}  # Return the negative absolute reward value
         action = int(action[2])
         self.step_count += 1
         reward = 0.0
