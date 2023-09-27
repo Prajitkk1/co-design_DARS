@@ -25,7 +25,7 @@ def as_tensor(observation):
     for key, obs in observation.items():
         observation[key] = torch.tensor(obs)
     return observation
-n_envs = 10 # Number of environments you want to run in parallel, 16 for training, 1 for test
+n_envs = 15 # Number of environments you want to run in parallel, 16 for training, 1 for test
 torch.manual_seed(42)
 torch.cuda.manual_seed_all(42)
 #log_dir = "/results"
@@ -49,7 +49,7 @@ def make_env(config, seed, log_dir):
         return env
     return _init
 config = get_config()
-test = False  # if this is set as true, then make sure the test data is generated.
+test = True  # if this is set as true, then make sure the test data is generated.
 # Otherwise, run the test_env_generator script
 config.device = torch.device("cuda:0" if config.use_cuda else "cpu")
 #config.device = torch.device( "cpu")
@@ -74,16 +74,22 @@ class SaveOnBestTrainingRewardCallback(BaseCallback):
         super(SaveOnBestTrainingRewardCallback, self).__init__(verbose)
         self.check_freq = check_freq
         self.log_dir = log_dir
+        self.save_dir = os.path.join(log_dir, 'models')
         self.save_path = os.path.join(log_dir, 'best_model')
         self.best_mean_reward = -np.inf
 
     def _init_callback(self) -> None:
         # Create folder if needed
+        os.makedirs(self.save_dir, exist_ok=True)
         if self.save_path is not None:
             os.makedirs(self.save_path, exist_ok=True)
 
     def _on_step(self) -> bool:
         if self.n_calls % self.check_freq == 0:
+            # Save model at every check_freq
+            interval_save_path = os.path.join(self.save_dir, f"model_at_step_{self.num_timesteps}.zip")
+            self.model.save(interval_save_path)
+
             # Retrieve training reward
             x, y = ts2xy(load_results(self.log_dir), 'timesteps')
             if len(x) > 0:
@@ -229,18 +235,19 @@ if __name__ == '__main__':
         obs = env.reset()
         model.save(save_model_loc)
     if test:
-        model = PPO.load(save_model_loc, env=env)
+        model = PPO.load(save_model_loc)
 
         trained_model_n_loc = config.n_locations
         trained_model_n_robots = config.n_robots
-        loc_test_multipliers = [1]
-        robot_test_multipliers = [1]
+        loc_test_multipliers = [0.5]
+        robot_test_multipliers = [2]
         path =  "Test_data/" + config.problem + "/"
         for loc_mult in loc_test_multipliers:
             for rob_mult in robot_test_multipliers:
-                n_robots_test = int(rob_mult*loc_mult*trained_model_n_robots) + 1
+                n_robots_test = int(rob_mult*loc_mult*trained_model_n_robots) 
+                n_robots_test = 6
                 n_loc_test = int(trained_model_n_loc*loc_mult)
-
+                n_loc_test = 51
                 env = DummyVecEnv([lambda: MRTA_Flood_Env(
                         n_locations = n_loc_test,
                         n_agents = n_robots_test,
@@ -268,6 +275,7 @@ if __name__ == '__main__':
                     for i in range(1000000):
                             model.policy.set_training_mode(False)
                             action = model.policy._predict(obs)
+                            action = action.cpu().detach().numpy()
                             obs, reward, done, _ = env.step(action)
                             obs = as_tensor(obs)
                             if done:
@@ -304,7 +312,7 @@ if __name__ == '__main__':
                 result_path = "Results/" + config.problem + "/"
 
                 result_file = result_path + config.problem + "_nloc_" + str(n_loc_test) \
-                              + "_nrob_" + str(n_robots_test) + "_" + task_type + "_" + encoder
+                              + "_nrob_" + str(n_robots_test) + "_" + task_type + "_" + encoder + "random_1"
                 mode = 0o755
                 if not os.path.exists(result_path):
                     os.makedirs(result_path, mode)

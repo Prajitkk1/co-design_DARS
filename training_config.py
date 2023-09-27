@@ -11,7 +11,7 @@ def get_config(args=None):
         description="Graph Neural Network based reinforcement learning solution for MRTA-Flood")
     # Environment related
     parser.add_argument('--problem', type=str, default='MRTA_Flood', help='Name of the problem')
-    parser.add_argument('--n_locations', type=int, default=101, help="Number of locations (including the depot if any).")
+    parser.add_argument('--n_locations', type=int, default=51, help="Number of locations (including the depot if any).")
     parser.add_argument('--n_initial_tasks', type=int, default=41,
                         help="Number of initial tasks available. Used for problem with dynamic tasks.")
     parser.add_argument('--n_robots', type=int, default=5, help="Number of robots")

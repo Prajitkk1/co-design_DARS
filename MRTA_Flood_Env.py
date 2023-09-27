@@ -19,6 +19,7 @@ from scipy.io import loadmat
 from scipy.interpolate import griddata
 import math
 import os 
+import copy
 Paret = loadmat('paretos.mat')
 # Assume Paret is a numpy array
 Paret = np.array(Paret['Paret'])
@@ -125,6 +126,7 @@ class MRTA_Flood_Env(Env):
         self.available_tasks = torch.zeros((n_locations, 1), dtype=torch.float32)
         self.actions_vals = []
         #new
+        self.talent_beginned = [0.5,0.5]
         if not self.enable_dynamic_tasks:
             n_initial_tasks = n_locations
         self.n_initial_tasks = n_initial_tasks
@@ -184,13 +186,31 @@ class MRTA_Flood_Env(Env):
         
 
     def initialize(self):
-        self.max_capacity = 5
-        self.max_range = 8.13
+        self.max_capacity = 3
+        self.max_range = 14.315
         #speed = get_speed(self.max_capacity, self.max_range)
-        self.agent_speed = 23.6  # this param should be handles=d carefully. Makesure this is the same for the baselines, 23.7 is for the f450 baselines
+        self.agent_speed = 19.934 # this param should be handles=d carefully. Makesure this is the same for the baselines, 23.7 is for the f450 baselines
 
         self.agents_current_range = torch.ones((1,self.n_agents), dtype=torch.float32)*self.max_range
         self.agents_current_payload = torch.ones((1,self.n_agents), dtype=torch.float32)*self.max_capacity
+        self.agent_distance_travelled = torch.zeros((1, self.n_agents), dtype=torch.float32)
+        self.agent_distance_travelled_per_trip = list()
+        self.agent_task_completed = torch.zeros((1, self.n_agents), dtype=torch.float32)
+        self.completed_tasks_distance = list()
+        self.deadline_passed_distances = list()
+        self.task_completed_info = list()
+        self.time_deadlines_copy = copy.deepcopy(self.time_deadlines)
+        saving = [self.max_capacity, self.max_range, self.agent_speed]
+        self.packages_per_trip = {}
+        for i in range(self.n_agents):
+            key = i
+            value = [0]
+            self.packages_per_trip[key] = value
+        self.distances_per_trip = {}
+        for i in range(self.n_agents):
+            key = i
+            value = [0]
+            self.distances_per_trip[key] = value
 
     def get_state(self):
         # include locations visited into the state
@@ -233,7 +253,6 @@ class MRTA_Flood_Env(Env):
                 'agents_graph_adjacency':agents_graph_adjacency,
                 'agent_taking_decision': torch.tensor([[self.agent_taking_decision]]),
                 'agent_talents': torch.tensor(agent_talents).reshape(1,2),
-
             }
         return state
 
@@ -327,6 +346,7 @@ class MRTA_Flood_Env(Env):
 
         info = {}
         travel_distance = self.distance_matrix[current_location_id, action]
+        self.agent_distance_travelled[0, agent_taking_decision] += travel_distance
         self.agents_current_range[0, agent_taking_decision] -= travel_distance
         self.agents_prev_decision_time[agent_taking_decision, 0] = self.time
         self.visited.append((action, self.agent_taking_decision))
@@ -334,16 +354,70 @@ class MRTA_Flood_Env(Env):
             self.agents_current_payload[0, agent_taking_decision] = torch.tensor(self.max_capacity)
             self.agents_current_range[0, agent_taking_decision] = torch.tensor(self.max_range)
             self.nodes_visited[action] = 0
+            self.packages_per_trip[agent_taking_decision].append(0)
         if self.nodes_visited[action] != 1 and action != self.depot_id:
             # range is reduced, capacity is reduced by 1
-
+            self.packages_per_trip[agent_taking_decision][-1] +=1
             distance_covered = self.total_distance_travelled + travel_distance
             self.total_distance_travelled = distance_covered
             self.agents_distance_travelled[agent_taking_decision] += travel_distance
             self.agents_current_payload[0, agent_taking_decision] -= self.location_demand[0, action].item()
+            #print(self.distance_matrix[self.depot_id, action])
+            self.completed_tasks_distance.append([self.distance_matrix[self.depot_id, action], self.time_deadlines_copy[0, action]])
             #print("working here")
             # update the  status of the node_visited that was chosen
             self.nodes_visited[action] = 1
+            self.agent_task_completed[0, agent_taking_decision] += 1
+            #print(travel_distance / self.agent_speed)
+            
+            
+            if self.time_deadlines[0, action] < torch.tensor(self.time + (travel_distance / self.agent_speed)):
+                self.deadline_passed[0, action] = 1
+            else:
+                self.task_done[0, action] = 1
+                # reward = 1/(self.n_locations-1)
+        self.total_reward += reward
+
+            # change destination of robot taking decision
+        self.agents_next_location[agent_taking_decision] = action
+        self.agents_prev_location[agent_taking_decision] = current_location_id
+        self.agents_destination_coordinates[agent_taking_decision] = self.locations[action].copy()
+        self.agents_distance_to_destination[agent_taking_decision] = travel_distance
+        self.agents_next_decision_time[agent_taking_decision] = self.time + travel_distance / self.agent_speed
+        if self.display:
+            self.render(action)
+
+        agent_taking_decision = self.agent_taking_decision  # id of the agent taking action
+        current_location_id = self.current_location_id  # current location id of the robot taking decision
+        self.total_length = self.total_length + 1
+
+        info = {}
+        travel_distance = self.distance_matrix[current_location_id, action]
+        self.agent_distance_travelled[0, agent_taking_decision] += travel_distance
+        self.agents_current_range[0, agent_taking_decision] -= travel_distance
+        self.agents_prev_decision_time[agent_taking_decision, 0] = self.time
+        self.visited.append((action, self.agent_taking_decision))
+        if action == self.depot_id: # if action is depot, then capacity is full, range is full
+            self.agents_current_payload[0, agent_taking_decision] = torch.tensor(self.max_capacity)
+            self.agents_current_range[0, agent_taking_decision] = torch.tensor(self.max_range)
+            self.nodes_visited[action] = 0
+            self.packages_per_trip[agent_taking_decision].append(0)
+            self.distances_per_trip[agent_taking_decision].append(0)
+        if self.nodes_visited[action] != 1 and action != self.depot_id:
+            # range is reduced, capacity is reduced by 1
+            self.packages_per_trip[agent_taking_decision][-1] +=1
+            self.task_completed_info.append([self.locations[action], self.time + (travel_distance / self.agent_speed)])
+            distance_covered = self.total_distance_travelled + travel_distance
+            self.distances_per_trip[agent_taking_decision][-1] += travel_distance
+            self.total_distance_travelled = distance_covered
+            self.agents_distance_travelled[agent_taking_decision] += travel_distance
+            self.agents_current_payload[0, agent_taking_decision] -= self.location_demand[0, action].item()
+            #print(self.distance_matrix[self.depot_id, action])
+            self.completed_tasks_distance.append([self.distance_matrix[self.depot_id, action], self.time_deadlines_copy[0, action]])
+            #print("working here")
+            # update the  status of the node_visited that was chosen
+            self.nodes_visited[action] = 1
+            self.agent_task_completed[0, agent_taking_decision] += 1
             #print(travel_distance / self.agent_speed)
             
             
@@ -375,8 +449,7 @@ class MRTA_Flood_Env(Env):
             self.nodes_visited[deadlines_passed_ids[:, 1], 0] = 1
         # print("Active tasks before update: ", self.active_tasks)
         self.active_tasks = ((self.nodes_visited == 0).nonzero())[0]
-        # print("Active tasks after update: ", self.active_tasks)
-        #print(self.active_tasks)
+
 
         self.available_tasks = (self.time_start <= self.time).to(torch.float32).T # making new tasks available
 
@@ -393,15 +466,21 @@ class MRTA_Flood_Env(Env):
             #print(self.time)
             self.total_reward = reward
             self.done = True
-            dir_path = "action_val"
-            #num_files = len([f for f in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, f))])
-
-           # my_array = np.array(self.actions_vals)
-
-            # Save the array to a .npy file
-            #np.save(os.path.join(dir_path, f'{num_files + 1}.npy'), my_array)
-            #print("dandanakka done")
-            #print(self.task_done.sum())
+            for index, value in np.ndenumerate(self.deadline_passed):
+                if value == 1:
+                    self.deadline_passed_distances.append([self.distance_matrix[self.depot_id, index], self.time_deadlines_copy[0,index]])
+            result_scenario = dict()
+            result_scenario["agent_distance_travelled"]= self.agent_distance_travelled
+            result_scenario["agent_task_done"] = self.agent_task_completed
+            result_scenario["total_distance_travelled"] = self.total_distance_travelled
+            result_scenario["packs_per_trip"] = self.packages_per_trip
+            result_scenario["missed_deadline_distances"] = self.deadline_passed_distances
+            result_scenario["completed_mission_distances"] = self.completed_tasks_distance
+            result_scenario["distances_per_trip"] = self.distances_per_trip
+            result_scenario["task_completed_info"] = self.task_completed_info
+            llst = len(os.listdir("scenario_results"))
+            file_name = "scenario_results/result" + str(llst+1)+".npy"
+            np.save(file_name, result_scenario)
             info = {"is_success": self.done,
                     "episode": {
                         "r": self.total_reward,

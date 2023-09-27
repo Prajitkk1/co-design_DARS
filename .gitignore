@@ -3,10 +3,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 .idea/
-Trained_Models/
 Tensorboard_logger/
 .vs/
 Baselines/BIGMRTA/Data
+Results/
+tmp2/
 # C extensions
 *.so
 
