@@ -269,7 +269,7 @@ class ActorCriticGCAPSPolicy(BasePolicy):
             },
             {
                 'params': [self.log_std],
-                'lr': 0.001
+                'lr': 0.0001
             }
         ]
 
@@ -301,16 +301,37 @@ class ActorCriticGCAPSPolicy(BasePolicy):
         return values, log_prob, distribution.entropy() 
 
 
-    def forward(self, obs, deterministic=False,  *args, **kwargs):
+    def forward(self, obs, deterministic=False, *args, **kwargs):
         features, graph_embed = self.extract_features(obs)
         latent_pi, values = self.context_extractor(graph_embed, obs)
         logits = self.action_decoder(latent_pi, features, obs).squeeze(1)
+
         non_trainable_part = F.linear(latent_pi, self.non_trainable_output_weights, self.non_trainable_output_bias)
         morphology = self.final_output(non_trainable_part).squeeze(1)
         distribution = self._get_action_dist_from_latent(morphology, logits)
-        actions = distribution.get_actions(deterministic=deterministic)
+        generated_actions = distribution.get_actions(deterministic=deterministic)
+        
+        talent_actions = obs["talent_beginned"]
+        
+        # Checking whether steps == 1 for each item in the batch
+        condition = obs["step"] >= 1  # Shape: [batch_size, 1]
+
+        # Update only the first two elements of each action in generated_actions based on condition
+        mask = condition.expand(-1, 2)  # Shape: [batch_size, 2], broadcasted to match action dims
+        zeros = torch.zeros_like(generated_actions[:, 2:3])  # Shape: [batch_size, 1], to keep the third element unchanged
+
+        # Construct a mask with True values for elements to be replaced
+        replacement_mask = torch.cat((mask, zeros.bool()), dim=1)  # Shape: [batch_size, 3]
+
+        # Extend talent_actions to match the action dimensions
+        replacements = torch.cat((talent_actions, zeros), dim=1)  # Shape: [batch_size, 3]
+
+        # Replace the first two elements of each action in generated_actions where condition is True
+        actions = torch.where(replacement_mask.unsqueeze(-1), replacements.unsqueeze(-1), generated_actions.unsqueeze(-1)).squeeze(-1)
+        
         log_prob = distribution.log_prob(actions)
         return actions, values, log_prob
+
 
     def _get_action_dist_from_latent(self, latent_pi: th.Tensor, logits):
         """
@@ -394,7 +415,7 @@ class HybridDistribution(Distribution):
         #print(["in log prob", continuous_actions.shape, discrete_action.shape])
         continuous_log_prob = self.continuous_distribution.log_prob(continuous_actions)
         #print(["after log_prob", continuous_log_prob.shape])
-        continuous_log_prob = sum_independent_dims(continuous_log_prob) * 2
+        continuous_log_prob = sum_independent_dims(continuous_log_prob) 
         discrete_log_prob = self.discrete_distribution.log_prob(discrete_action)
         #print(["log probs end", continuous_log_prob.shape, discrete_log_prob.shape ])
         return continuous_log_prob + discrete_log_prob
@@ -405,8 +426,8 @@ class HybridDistribution(Distribution):
 
     def sample(self) -> th.Tensor:
         #print(self.continuous_distribution.sample().shape)
-        #continuous_actions = self.continuous_distribution.sample().squeeze(1) 
-        continuous_actions = self.continuous_distribution.mean.squeeze(1)           #deterministic only for continuous
+        continuous_actions = self.continuous_distribution.sample().squeeze(1) 
+        #continuous_actions = self.continuous_distribution.mean.squeeze(1)           #deterministic only for continuous
         continuous_actions = torch.clamp(continuous_actions, min=0, max=1)
         discrete_action = self.discrete_distribution.sample().reshape(-1,1)
         return th.cat([continuous_actions, discrete_action], dim=1)

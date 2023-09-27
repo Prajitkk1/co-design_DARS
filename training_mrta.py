@@ -75,16 +75,22 @@ class SaveOnBestTrainingRewardCallback(BaseCallback):
         super(SaveOnBestTrainingRewardCallback, self).__init__(verbose)
         self.check_freq = check_freq
         self.log_dir = log_dir
+        self.save_dir = os.path.join(log_dir, 'models')
         self.save_path = os.path.join(log_dir, 'best_model')
         self.best_mean_reward = -np.inf
 
     def _init_callback(self) -> None:
         # Create folder if needed
+        os.makedirs(self.save_dir, exist_ok=True)
         if self.save_path is not None:
             os.makedirs(self.save_path, exist_ok=True)
 
     def _on_step(self) -> bool:
         if self.n_calls % self.check_freq == 0:
+            # Save model at every check_freq
+            interval_save_path = os.path.join(self.save_dir, f"model_at_step_{self.num_timesteps}.zip")
+            self.model.save(interval_save_path)
+
             # Retrieve training reward
             x, y = ts2xy(load_results(self.log_dir), 'timesteps')
             if len(x) > 0:
@@ -102,7 +108,6 @@ class SaveOnBestTrainingRewardCallback(BaseCallback):
                     self.model.save(self.save_path)
 
         return True
-
 
 
 
@@ -201,30 +206,30 @@ if __name__ == '__main__':
     envs = [make_env(config, seed=i, log_dir = log_dir) for i in range(n_envs)]
     env = SubprocVecEnv(envs)
     env = VecMonitor(env)
-    model = PPO(
-     
-        ActorCriticGCAPSPolicy,
-            env,
-            gamma=config.gamma,
-            verbose=1,
-            n_epochs=config.n_epochs,
-            batch_size=config.batch_size,
-            tensorboard_log=tb_logger_location,
+    #model = PPO(
+    # 
+    #    ActorCriticGCAPSPolicy,
+    #        env,
+    #        gamma=config.gamma,
+    #        verbose=1,
+    #        n_epochs=config.n_epochs,
+    #        batch_size=config.batch_size,
+    #        tensorboard_log=tb_logger_location,
             # create_eval_env=True,
-            n_steps=config.n_steps,
-            learning_rate= 0.0001,
-            policy_kwargs = policy_kwargs,
-            ent_coef=config.ent_coef,
-            vf_coef=config.val_coef,
-            device=config.device
-        )
+    #        n_steps=config.n_steps,
+    #        learning_rate= 0.0001,
+    #        policy_kwargs = policy_kwargs,
+    #        ent_coef=config.ent_coef,
+    #        vf_coef=config.val_coef,
+    #        device=config.device
+    #    )
 
     reward_threshold = 10.005
     #save_path = save_model_loc
     callback = SaveOnBestTrainingRewardCallback(check_freq=1000, log_dir=log_dir)
-
+    model = PPO.load(save_model_loc, env=env)
     if not test:
-        model.learn(total_timesteps=config.total_steps,reset_num_timesteps=True, callback=callback)
+        model.learn(total_timesteps=config.total_steps,reset_num_timesteps=False, callback=callback)
 
         obs = env.reset()
         model.save(save_model_loc)

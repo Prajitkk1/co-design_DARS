@@ -49,7 +49,7 @@ action_0_bounds = {
                 7: (4.16, 6.80)
             }
 
-def scale_action_values(action_values):
+def scale_action_values1(action_values):
     assert len(action_values) == 3, "The input array should have 3 values."
     scaled_values = np.zeros_like(action_values, dtype=float)
     action_values[0] = np.clip(action_values[0], 0, 1)
@@ -64,6 +64,24 @@ def scale_action_values(action_values):
 
     # Scale the second value to the retrieved range.
     scaled_values[1] = action_values[1] * (15.1 - 4.16) + 4.16
+
+    scaled_values[2] = action_values[2]
+
+    return scaled_values
+
+
+def scale_action_values(action_values):
+    assert len(action_values) == 3, "The input array should have 3 values."
+    scaled_values = np.zeros_like(action_values, dtype=float)
+
+    # Scale the first value to the range 2 to 7 and round to the nearest integer.
+    scaled_values[0] = round(((action_values[0])) * (7 - 2) + 2)
+
+    # Get the min and max values for the second action based on the scaled first action value
+    min_val, max_val = action_0_bounds[scaled_values[0]]
+
+    # Scale the second value to the retrieved range.
+    scaled_values[1] = ((action_values[1])) * (max_val - min_val) + min_val
 
     scaled_values[2] = action_values[2]
 
@@ -137,7 +155,7 @@ class MRTA_Flood_Env(Env):
 
         self.task_graph_node_dim = self.generate_task_graph()[0].shape[1]
         self.agent_node_dim = self.generate_agents_graph()[0].shape[1]
- 
+        self.talent_beginned = [0.5,0.5]
 
         self.step_count = 0
         self.action_0_bounds = {
@@ -174,6 +192,8 @@ class MRTA_Flood_Env(Env):
                     agents_graph_nodes=Box(low=0, high=1, shape=(n_agents, self.agent_node_dim)),
                     agent_taking_decision=Box(low=0, high=n_agents, shape=(1,1), dtype=int),
                     agent_talents=Box(low=4, high=14.97, shape=(1,2), dtype=np.float32),
+                    step= Box(low=0, high=55, shape=(1,), dtype=int),
+                    talent_beginned= Box(low=0, high=1, shape=(2,), dtype=int)
                 ))
 
         self.training = training
@@ -218,7 +238,7 @@ class MRTA_Flood_Env(Env):
         task_graph_nodes_normalized = normalize(task_graph_nodes)
         task_graph_adjacency_normalized = normalize(task_graph_adjacency)
         agents_graph_nodes_normalized = normalize(agents_graph_nodes)
-
+        step = np.array([self.step_count])
 
         if self.enable_topological_features:
             state = {
@@ -239,7 +259,8 @@ class MRTA_Flood_Env(Env):
                 'agents_graph_adjacency':agents_graph_adjacency,
                 'agent_taking_decision': torch.tensor([[self.agent_taking_decision]]),
                 'agent_talents': torch.tensor(agent_talents).reshape(1,2),
-
+                'step': torch.tensor(step).reshape(1,),
+                'talent_beginned': torch.tensor(self.talent_beginned)
             }
         return state
 
@@ -308,8 +329,8 @@ class MRTA_Flood_Env(Env):
 
     def step(self, action):
         action_scaled = scale_action_values(action)
-        #print(action_scaled, "scaled actions")
         if self.step_count == 0:
+            self.talent_beginned = action[:2]
             for action_0_value, (lower, upper) in self.action_0_bounds.items():
                 if action_scaled[0] == action_0_value:
                     if action_scaled[1] < lower:
@@ -320,8 +341,6 @@ class MRTA_Flood_Env(Env):
                         continue  # If action_1 is within the bounds, skip to the next iteration
                     done = True
                     obs = self.get_encoded_state()
-                    #reward = min(reward_low, reward_high)
-                    #print(["reward on failure: ", -abs(reward)])
                     return obs, -abs(reward), done, {}  # Return the negative absolute reward value
                 self.initialize(action_scaled[0], action_scaled[1])
         action = int(action[2])
