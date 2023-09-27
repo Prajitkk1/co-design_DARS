@@ -355,54 +355,8 @@ class MRTA_Flood_Env(Env):
             self.agents_current_range[0, agent_taking_decision] = torch.tensor(self.max_range)
             self.nodes_visited[action] = 0
             self.packages_per_trip[agent_taking_decision].append(0)
-        if self.nodes_visited[action] != 1 and action != self.depot_id:
-            # range is reduced, capacity is reduced by 1
-            self.packages_per_trip[agent_taking_decision][-1] +=1
-            distance_covered = self.total_distance_travelled + travel_distance
-            self.total_distance_travelled = distance_covered
-            self.agents_distance_travelled[agent_taking_decision] += travel_distance
-            self.agents_current_payload[0, agent_taking_decision] -= self.location_demand[0, action].item()
-            #print(self.distance_matrix[self.depot_id, action])
-            self.completed_tasks_distance.append([self.distance_matrix[self.depot_id, action], self.time_deadlines_copy[0, action]])
-            #print("working here")
-            # update the  status of the node_visited that was chosen
-            self.nodes_visited[action] = 1
-            self.agent_task_completed[0, agent_taking_decision] += 1
-            #print(travel_distance / self.agent_speed)
-            
-            
-            if self.time_deadlines[0, action] < torch.tensor(self.time + (travel_distance / self.agent_speed)):
-                self.deadline_passed[0, action] = 1
-            else:
-                self.task_done[0, action] = 1
-                # reward = 1/(self.n_locations-1)
-        self.total_reward += reward
-
-            # change destination of robot taking decision
-        self.agents_next_location[agent_taking_decision] = action
-        self.agents_prev_location[agent_taking_decision] = current_location_id
-        self.agents_destination_coordinates[agent_taking_decision] = self.locations[action].copy()
-        self.agents_distance_to_destination[agent_taking_decision] = travel_distance
-        self.agents_next_decision_time[agent_taking_decision] = self.time + travel_distance / self.agent_speed
-        if self.display:
-            self.render(action)
-
-        agent_taking_decision = self.agent_taking_decision  # id of the agent taking action
-        current_location_id = self.current_location_id  # current location id of the robot taking decision
-        self.total_length = self.total_length + 1
-
-        info = {}
-        travel_distance = self.distance_matrix[current_location_id, action]
-        self.agent_distance_travelled[0, agent_taking_decision] += travel_distance
-        self.agents_current_range[0, agent_taking_decision] -= travel_distance
-        self.agents_prev_decision_time[agent_taking_decision, 0] = self.time
-        self.visited.append((action, self.agent_taking_decision))
-        if action == self.depot_id: # if action is depot, then capacity is full, range is full
-            self.agents_current_payload[0, agent_taking_decision] = torch.tensor(self.max_capacity)
-            self.agents_current_range[0, agent_taking_decision] = torch.tensor(self.max_range)
-            self.nodes_visited[action] = 0
-            self.packages_per_trip[agent_taking_decision].append(0)
             self.distances_per_trip[agent_taking_decision].append(0)
+
         if self.nodes_visited[action] != 1 and action != self.depot_id:
             # range is reduced, capacity is reduced by 1
             self.packages_per_trip[agent_taking_decision][-1] +=1
@@ -490,6 +444,9 @@ class MRTA_Flood_Env(Env):
             reward = reward.item()
 
         return self.get_encoded_state(), reward, self.done, info
+
+
+
 
     def get_mask(self):
         # masking:
