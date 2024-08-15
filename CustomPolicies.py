@@ -1,6 +1,7 @@
 """
 Author: Steve Paul 
 Date: 1/18/22 """
+from argparse import Action
 import torch
 
 from stable_baselines3.common.policies import BasePolicy
@@ -23,7 +24,9 @@ from stable_baselines3.common.distributions import (
     make_proba_distribution,
 )
 from torch.nn import functional as F
-
+from stable_baselines3.common.distributions import Distribution
+from torch.distributions import Bernoulli, Categorical, Normal
+import random
 #   TODO:
 #   Make the policy network task independent
 
@@ -119,7 +122,7 @@ class MHA_Decoder(th.nn.Module):
         log_p = self._one_to_many_logits(query, glimpse_K, glimpse_V, logit_K, obs['mask'])
 
         log_p = th.log_softmax(log_p / self.temp, dim=-1)
-
+        #print(log_p.shape, "logppppp")
         return log_p
 
 def dicttuple(cls: tuple):
@@ -196,6 +199,9 @@ class ActorCriticGCAPSPolicy(BasePolicy):
         value_net_net = [th.nn.Linear(features_dim, features_dim, bias=True),
                          th.nn.Linear(features_dim, 1, bias=True)]
         self.value_net = th.nn.Sequential(*value_net_net).to(device=device)
+        value_net_net1 = [th.nn.Linear(2, 6, bias=True),
+                         th.nn.Linear(6, 1, bias=True)]
+        self.value_net1 = th.nn.Sequential(*value_net_net1).to(device=device)
         if features_extractor_kwargs['feature_extractor'] == "CAPAM":
             from Feature_Extractors import CAPAM
             self.features_extractor = CAPAM(
@@ -229,7 +235,8 @@ class ActorCriticGCAPSPolicy(BasePolicy):
         self.agent_decision_context = th.nn.Linear(agent_node_dim, features_dim).to(device=device)
         self.agent_context = th.nn.Linear(agent_node_dim, features_dim).to(device=device)
         self.full_context_nn = th.nn.Linear(3 * features_dim + 2, features_dim).to(device=device)
-        self.action_dist = make_proba_distribution(action_space, use_sde=use_sde)
+        self.action_dist = HybridDistribution()
+
 
         self.project_fixed_context = th.nn.Linear(features_dim, features_dim, bias=False).to(device=device)
         self.project_node_embeddings = th.nn.Linear(features_dim, 3 * features_dim, bias=False).to(device=device)
@@ -240,98 +247,101 @@ class ActorCriticGCAPSPolicy(BasePolicy):
         self.temp = features_extractor_kwargs['temp']
         self.action_decoder = MHA_Decoder(features_dim=features_dim,
                                                features_extractor_kwargs=features_extractor_kwargs, device=device)
-        # self._build()
+        self._build(device)
         self.batch_norm = th.nn.BatchNorm1d(128)
-        self.network = th.nn.Sequential(
-            th.nn.Linear(features_dim, 64),
-            th.nn.Tanh()
-        )
-        self.final_output = th.nn.Tanh()
-        self.trainable_output = th.nn.Linear(64, 1, bias=False)
-        #th.nn.init.uniform_(self.trainable_output.weight, -0.001, 0.001)
 
-        self.bo1 = th.nn.BatchNorm1d(128)
-       # self.bo2 = th.nn.BatchNorm1d(64)
+        self.final_output = th.nn.Sigmoid()
         # non-trainable part
-       # self.non_trainable_output_weights = th.nn.Parameter(torch.zeros(2, 64), requires_grad=False)
-       # self.non_trainable_output_bias = th.nn.Parameter(torch.zeros(2), requires_grad=True)
-        
+        self.non_trainable_output_weights = th.nn.Parameter(torch.zeros(2, features_dim), requires_grad=False)
+        self.non_trainable_output_bias = th.nn.Parameter(torch.randn(2), requires_grad=True)
+        morphology_network = [th.nn.Linear(2, 12, bias=True),
+                         th.nn.Linear(12, 2, bias=True)]
+        self.morphology_network = th.nn.Sequential(*morphology_network).to(device=device)
 
-        
+        #self.optimizer = self.optimizer_class(param_groups, **self.optimizer_kwargs)
+
         self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
+        #self.optimizer = self.optimizer_class(param_groups, **self.optimizer_kwargs)
         
 
     def _predict(self, observation: th.Tensor, deterministic: bool = True) -> th.Tensor:
         actions, values, log_prob = self.forward(observation, deterministic=deterministic)
         return actions
 
-    def _build(self):
-        if isinstance(self.action_dist, DiagGaussianDistribution):
-            self.action_net, self.log_std = self.action_dist.proba_distribution_net(
-                latent_dim=128, log_std_init=self.log_std_init
-            )
+    def _build(self,device):
+        self.log_std = self.action_dist.proba_distribution_net(
+        latent_dim=2, log_std_init=self.log_std_init , device= device
+                )   
         
 
     def evaluate_actions(self, obs: th.Tensor, actions: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
         features, graph_embed = self.extract_features(obs)
         latent_pi, values = self.context_extractor(graph_embed, obs)
+        logits = self.action_decoder(latent_pi, features, obs).squeeze(1)
+        non_trainable_part = F.linear(latent_pi, self.non_trainable_output_weights, self.non_trainable_output_bias)
+        morphology = self.morphology_network(non_trainable_part)
+        morphology = self.final_output(morphology).squeeze(1)
+        distribution = self._get_action_dist_from_latent(morphology, logits)
 
-        latent_pi = self.forward_actor(latent_pi)
-        #print(latent_pi)
-        distribution = self._get_action_dist_from_latent(latent_pi)
         log_prob = distribution.log_prob(actions)
+        #print(log_prob, "log_prob")
         return values, log_prob, distribution.entropy() 
 
 
-    def forward(self, obs, deterministic=False,  *args, **kwargs):
+    def forward(self, obs, deterministic=False, *args, **kwargs):
         features, graph_embed = self.extract_features(obs)
-
         latent_pi, values = self.context_extractor(graph_embed, obs)
-       # print("aaaa")
-       # print(latent_pi)
-        mean_actions = self.action_decoder(latent_pi, features, obs)
-        # latent_pi = self.forward_actor(latent_pi)
-       # print(latent_pi)
-        distribution = self._get_action_dist_from_latent(mean_actions)
-        actions = distribution.get_actions(deterministic=deterministic)
+        logits = self.action_decoder(latent_pi, features, obs).squeeze(1)
 
+        non_trainable_part = F.linear(latent_pi, self.non_trainable_output_weights, self.non_trainable_output_bias)
+        morphology = self.morphology_network(non_trainable_part)
+        #print(morphology)
+        morphology = self.final_output(morphology).squeeze(1)
+        #print(morphology)
+        distribution = self._get_action_dist_from_latent(morphology, logits)
+        generated_actions = distribution.get_actions(obs = obs, deterministic=deterministic)
+        #print(generated_actions)
+        actions_to_clip = generated_actions[:, :2]  # Selects the actions at indices 0 and 1 along dimension 1
+
+        # Clip the selected actions
+        clipped_actions = actions_to_clip.clamp(0.0, 1.0)
+
+        # Replace the original actions with the clipped actions
+        generated_actions[:, :2] = clipped_actions
+        talent_actions = obs["talent_beginned"].to(device = generated_actions.device)
+        #print(talent_actions, "talent_actions")
+        #print(obs["step"], "obsstep")
+        # Checking whether steps == 1 for each item in the batch
+        condition = obs["step"] >= 1  # Shape: [batch_size, 1]
+
+        # Update only the first two elements of each action in generated_actions based on condition
+        mask = condition.expand(-1, 2).to(device = generated_actions.device)  # Shape: [batch_size, 2], broadcasted to match action dims
+        zeros = torch.zeros_like(generated_actions[:, 2:3]).to(device = generated_actions.device)  # Shape: [batch_size, 1], to keep the third element unchanged
+
+        # Construct a mask with True values for elements to be replaced
+        replacement_mask = torch.cat((mask, zeros.bool()), dim=1).to(device = generated_actions.device)  # Shape: [batch_size, 3]
+
+        # Extend talent_actions to match the action dimensions
+        replacements = torch.cat((talent_actions, zeros), dim=1)  # Shape: [batch_size, 3]
+
+        # Replace the first two elements of each action in generated_actions where condition is True
+        actions = torch.where(replacement_mask.unsqueeze(-1), replacements.unsqueeze(-1), generated_actions.unsqueeze(-1)).squeeze(-1)
+        #print(actions, "actions in forward")
         log_prob = distribution.log_prob(actions)
         return actions, values, log_prob
 
-    def _get_action_dist_from_latent(self, latent_pi: th.Tensor):
+    def _get_action_dist_from_latent(self, latent_pi: th.Tensor, logits):
         """
         Retrieve action distribution given the latent codes.
 
         :param latent_pi: Latent code for the actor
         :return: Action distribution
         """
-        
-        # mean_actions = self.action_net(latent_pi)
         mean_actions = latent_pi
-
-        if isinstance(self.action_dist, DiagGaussianDistribution):
-            return self.action_dist.proba_distribution(mean_actions, self.log_std)
-        elif isinstance(self.action_dist, CategoricalDistribution):
-            # Here mean_actions are the logits before the softmax
-            return self.action_dist.proba_distribution(action_logits=mean_actions)
-        elif isinstance(self.action_dist, MultiCategoricalDistribution):
-            # Here mean_actions are the flattened logits
-            return self.action_dist.proba_distribution(action_logits=mean_actions)
-        elif isinstance(self.action_dist, BernoulliDistribution):
-            # Here mean_actions are the logits (before rounding to get the binary actions)
-            return self.action_dist.proba_distribution(action_logits=mean_actions)
-        elif isinstance(self.action_dist, StateDependentNoiseDistribution):
-            return self.action_dist.proba_distribution(mean_actions, self.log_std, latent_pi)
-        else:
-            raise ValueError("Invalid action distribution")
+        return self.action_dist.proba_distribution(mean_actions, self.log_std, logits )
 
 
 
-    def get_distribution(self, obs):
-        features, graph_embed = self.extract_features(obs)
-        latent_pi, values = self.context_extractor(graph_embed, obs)
-        latent_pi = self.forward_actor(latent_pi)
-        return self._get_action_dist_from_latent(latent_pi)
 
     def context_extractor(self, graph_embed, observations):
         device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
@@ -340,25 +350,15 @@ class ActorCriticGCAPSPolicy(BasePolicy):
         observations['agents_graph_nodes'] = observations['agents_graph_nodes'].to(device)
         observations['agent_talents'] = observations['agent_talents'].to(torch.float32).to(device)
         agent_taking_decision_state = (observations['agents_graph_nodes'][torch.arange(0, n_data), agent_taking_decision, :][:, None, :]).to(torch.float32)
-        #print(observations['agent_talents'].dtype)
-        #print(observations['agents_graph_nodes'].dtype)
+
         
         context = self.full_context_nn(
                     th.cat((observations['agent_talents'],graph_embed[:, None, :],self.agent_decision_context(agent_taking_decision_state),
                             self.agent_context(observations['agents_graph_nodes'].to(torch.float32)).sum(1)[:,None,:]), -1)).to(device)
-        return context, self.value_net(context)
+  
+        value1 = self.value_net1(observations['agent_talents'])
+        return context, self.value_net(context)+value1
 
-    def forward_actor(self, obs):
-        obs = obs.view(-1, 128)
-        # obs = self.bo1(obs)
-        x = self.network(obs)
-        #x = self.bo2(x)
-        trainable_part = self.trainable_output(x)
-        #non_trainable_part = F.linear(x, self.non_trainable_output_weights, self.non_trainable_output_bias)
-       # combined_output = torch.cat((non_trainable_part, trainable_part ), dim=1)
-        #print(combined_output)
-        sigmoid_output = self.final_output(trainable_part)
-        return sigmoid_output
 
     def predict_values(self, obs: th.Tensor) -> th.Tensor:
         """
@@ -371,3 +371,116 @@ class ActorCriticGCAPSPolicy(BasePolicy):
 
         latent_pi, values = self.context_extractor(graph_embed, obs)
         return values
+
+
+def sum_independent_dims(tensor: th.Tensor) -> th.Tensor:
+    """
+    Continuous actions are usually considered to be independent,
+    so we can sum components of the ``log_prob`` or the entropy.
+
+    :param tensor: shape: (n_batch, n_actions) or (n_batch,)
+    :return: shape: (n_batch,)
+    """
+    if len(tensor.shape) > 1:
+        tensor = tensor.sum(dim=1)
+    else:
+        tensor = tensor.sum()
+    return tensor
+
+
+
+
+class HybridDistribution(Distribution):
+    def __init__(self):
+        super(HybridDistribution, self).__init__()
+        self.continuous_distribution = None
+        self.discrete_distribution = None
+
+    def proba_distribution_net(self, latent_dim: int, log_std_init: float = 0.0, device: str = "cuda:0") -> Tuple[th.nn.Module, th.nn.Parameter]:
+        log_std = th.nn.Parameter(th.ones(2) * log_std_init, requires_grad=True)
+        return log_std
+
+    def proba_distribution(self, mean_actions: th.Tensor, log_std: th.Tensor, logits: th.Tensor) -> "HybridDistribution":
+        action_std = th.ones_like(mean_actions) * log_std.exp()
+        #print(action_std)
+        self.continuous_distribution = Normal(mean_actions, action_std)
+        self.discrete_distribution = Categorical(logits=logits)
+        return self
+
+
+    def log_prob(self, actions: th.Tensor) -> th.Tensor:
+        continuous_actions, discrete_action = actions[:, :2], actions[:, 2]
+        #print(continuous_actions, "actions")
+        #print(discrete_action, "discrete_action")
+        continuous_log_prob = self.continuous_distribution.log_prob(continuous_actions)
+        #print(continuous_log_prob, "log_prob")
+        continuous_log_prob = sum_independent_dims(continuous_log_prob)
+        #print(continuous_log_prob, "log_prob_summation")
+        discrete_log_prob = self.discrete_distribution.log_prob(discrete_action)
+        return continuous_log_prob + discrete_log_prob
+
+    def sample(self, epsilon: float = 0.5) -> th.Tensor:
+        continuous_actions = self.continuous_distribution.sample().squeeze(1) 
+
+        discrete_action = self.discrete_distribution.sample().reshape(-1, 1)
+        #discrete_action = self.discrete_distribution.sample().reshape(-1, 1)
+
+        return th.cat([continuous_actions, discrete_action], dim=1)
+    
+    def sample1(self, obs, epsilon: float = 0.25) -> th.Tensor:
+        continuous_actions = self.continuous_distribution.sample().squeeze(1)
+        mask = th.tensor(obs["mask"], dtype=th.bool, device=continuous_actions.device).squeeze(-1)  
+    
+        batch_size, num_actions = mask.shape
+        discrete_actions = th.empty((batch_size, 1), dtype=th.long, device=continuous_actions.device)
+
+        if th.rand(1) < epsilon:
+            for i in range(batch_size):
+                valid_actions = th.nonzero(mask[i] == 0).view(-1)
+                print(valid_actions, "valid actions")
+                print(mask[i], "mask")
+                if len(valid_actions) > 0:
+                    # Select a random index from the valid actions for this batch
+                    random_action = valid_actions[th.randint(0, len(valid_actions), (1,))]
+                    discrete_actions[i] = random_action
+                else:
+                    # Handle the case where there are no valid actions
+                    raise ValueError(f"No valid action found in obs['mask'] for batch {i}.")
+                print("action", random_action)
+            #discrete_action1 = self.discrete_distribution.sample().reshape(-1, 1)
+            #print(discrete_actions.shape, discrete_action1.shape)
+        else:
+            # Sample from the discrete distribution for each batch
+            discrete_actions = self.discrete_distribution.sample().reshape(-1, 1)
+
+        return th.cat([continuous_actions, discrete_actions], dim=1)
+
+    def mode(self) -> th.Tensor:
+        continuous_actions = self.continuous_distribution.mean.squeeze(1) 
+        discrete_action = self.discrete_distribution.probs.argmax(dim=1).reshape(-1,1)
+        return th.cat([continuous_actions, discrete_action], dim=1)
+
+    def entropy(self) -> Optional[th.Tensor]:
+        cont_ent = self.continuous_distribution.entropy()
+        continuous_entropy = sum_independent_dims(cont_ent)
+        discrete_entropy = self.discrete_distribution.entropy()
+        #print(continuous_entropy, discrete_entropy)
+        return continuous_entropy + discrete_entropy
+
+    def actions_from_params(self, mean_actions: th.Tensor, log_std: th.Tensor,logits, deterministic: bool = False) -> th.Tensor:
+        # Update the proba distribution
+        self.proba_distribution(mean_actions, log_std, logits)
+        return self.get_actions(deterministic=deterministic)
+
+    def log_prob_from_params(self, mean_actions: th.Tensor, log_std: th.Tensor, logits) -> Tuple[th.Tensor, th.Tensor]:
+        """
+        Compute the log probability of taking an action
+        given the distribution parameters.
+
+        :param mean_actions:
+        :param log_std:
+        :return:
+        """
+        actions = self.actions_from_params(mean_actions, log_std, logits)
+        log_prob = self.log_prob(actions)
+        return actions, log_prob

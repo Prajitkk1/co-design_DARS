@@ -11,7 +11,7 @@ import pickle
 import os
 from CustomPolicies import ActorCriticGCAPSPolicy
 from training_config import get_config
-from stable_baselines3.common.vec_env import DummyVecEnv #, SubprocVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv,VecCheckNan #, SubprocVecEnv
 import gc
 from typing import Callable, Dict, List, Optional, Tuple, Type, Union
 from stable_baselines3.common.vec_env import SubprocVecEnv
@@ -20,18 +20,20 @@ from stable_baselines3.common.callbacks import BaseCallback
 gc.collect()
 warnings.filterwarnings('ignore')
 torch.cuda.empty_cache()
+torch.autograd.set_detect_anomaly(True)
 from stable_baselines3.common.vec_env import VecMonitor
 def as_tensor(observation):
     for key, obs in observation.items():
         observation[key] = torch.tensor(obs)
     return observation
-n_envs = 10 # Number of environments you want to run in parallel, 16 for training, 1 for test
+n_envs = 15 # Number of environments you want to run in parallel, 16 for training, 1 for test
 torch.manual_seed(42)
 torch.cuda.manual_seed_all(42)
 #log_dir = "/results"
 #os.makedirs(log_dir, exist_ok=True)
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.results_plotter import load_results, ts2xy, plot_results
+
 
 def make_env(config, seed, log_dir):
     def _init():
@@ -49,7 +51,7 @@ def make_env(config, seed, log_dir):
         return env
     return _init
 config = get_config()
-test = False  # if this is set as true, then make sure the test data is generated.
+test = True 	  # if this is set as true, then make sure the test data is generated.
 # Otherwise, run the test_env_generator script
 config.device = torch.device("cuda:0" if config.use_cuda else "cpu")
 #config.device = torch.device( "cpu")
@@ -74,16 +76,22 @@ class SaveOnBestTrainingRewardCallback(BaseCallback):
         super(SaveOnBestTrainingRewardCallback, self).__init__(verbose)
         self.check_freq = check_freq
         self.log_dir = log_dir
+        self.save_dir = os.path.join(log_dir, 'models')
         self.save_path = os.path.join(log_dir, 'best_model')
         self.best_mean_reward = -np.inf
 
     def _init_callback(self) -> None:
         # Create folder if needed
+        os.makedirs(self.save_dir, exist_ok=True)
         if self.save_path is not None:
             os.makedirs(self.save_path, exist_ok=True)
 
     def _on_step(self) -> bool:
         if self.n_calls % self.check_freq == 0:
+            # Save model at every check_freq
+            interval_save_path = os.path.join(self.save_dir, f"model_at_step_{self.num_timesteps}.zip")
+            self.model.save(interval_save_path)
+
             # Retrieve training reward
             x, y = ts2xy(load_results(self.log_dir), 'timesteps')
             if len(x) > 0:
@@ -125,7 +133,14 @@ def linear_schedule(initial_value: float) -> Callable[[float], float]:
 
     return func
 
+def learning_rate_schedule(initial_value: float) -> Callable[[float], float]:
 
+    def func(progress_remaining: float) -> float:
+        decay_rate = 1.2
+        return initial_value * math.exp((-progress_remaining**2*decay_rate))
+
+        # return  initial_value
+    return func
 
 if __name__ == '__main__':
     if config.enable_dynamic_tasks:
@@ -200,31 +215,34 @@ if __name__ == '__main__':
     envs = [make_env(config, seed=i, log_dir = log_dir) for i in range(n_envs)]
     env = SubprocVecEnv(envs)
     env = VecMonitor(env)
-    #model = PPO.load(save_model_loc, env=env)
+    #env= VecCheckNan(env, raise_exception=True)
     model = PPO(
      
-    ActorCriticGCAPSPolicy,
-        env,
-        gamma=config.gamma,
-        verbose=1,
-        n_epochs=config.n_epochs,
-        batch_size=config.batch_size,
-        tensorboard_log=tb_logger_location,
-        # create_eval_env=True,
-        n_steps=config.n_steps,
-        learning_rate= 0.0001,
-        policy_kwargs = policy_kwargs,
-        ent_coef=config.ent_coef,
-        vf_coef=config.val_coef,
-        device=config.device
-    )
-
+        ActorCriticGCAPSPolicy,
+            env,
+            gamma=config.gamma,
+            verbose=1,
+            n_epochs=config.n_epochs,
+            batch_size=config.batch_size,
+            tensorboard_log=tb_logger_location,
+            # create_eval_env=True,
+            n_steps=config.n_steps,
+            normalize_advantage = True,
+            learning_rate= 0.00005,
+            policy_kwargs = policy_kwargs,
+            ent_coef=config.ent_coef,
+            vf_coef=config.val_coef,
+            device=config.device
+        )
+    custom_objects = {'learning_rate': 0.00001}
+    #model = PPO.load("best_model", env=env, custom_objects = custom_objects)
     reward_threshold = 10.005
     #save_path = save_model_loc
-    callback = SaveOnBestTrainingRewardCallback(check_freq=1000, log_dir=log_dir)
-
+    callback = SaveOnBestTrainingRewardCallback(check_freq=2000, log_dir=log_dir)
+    
     if not test:
-        model.learn(total_timesteps=config.total_steps,reset_num_timesteps=False, callback=callback)
+
+        model.learn(total_timesteps=config.total_steps,reset_num_timesteps=True, callback=callback)
 
         obs = env.reset()
         model.save(save_model_loc)
@@ -233,13 +251,15 @@ if __name__ == '__main__':
 
         trained_model_n_loc = config.n_locations
         trained_model_n_robots = config.n_robots
-        loc_test_multipliers = [1]
-        robot_test_multipliers = [1]
+        loc_test_multipliers = [51,101,151]
+        robot_test_multipliers = [5,10,15]
         path =  "Test_data/" + config.problem + "/"
         for loc_mult in loc_test_multipliers:
             for rob_mult in robot_test_multipliers:
-                n_robots_test = int(rob_mult*loc_mult*trained_model_n_robots) + 1
-                n_loc_test = int(trained_model_n_loc*loc_mult)
+                #n_robots_test = int(rob_mult*loc_mult*trained_model_n_robots)
+                #n_loc_test = int(trained_model_n_loc*loc_mult)
+                n_robots_test = int(rob_mult)
+                n_loc_test = int(loc_mult)
 
                 env = DummyVecEnv([lambda: MRTA_Flood_Env(
                         n_locations = n_loc_test,
@@ -266,16 +286,19 @@ if __name__ == '__main__':
                     obs = env.reset()
                     obs = as_tensor(obs)
                     for i in range(1000000):
-                            model.policy.set_training_mode(False)
-                            action = model.policy._predict(obs)
-                            obs, reward, done, _ = env.step(action)
-                            obs = as_tensor(obs)
-                            if done:
-                                    total_rewards_list.append(reward)
-                                    distance_list.append(env.envs[0].total_distance_travelled)
-                                    total_tasks_done_list.append(env.envs[0].task_done.sum())
-                                    print(env.envs[0].task_done.sum())
-                                    break
+                            with torch.no_grad():
+                                model.policy.set_training_mode(False)
+                                action = model.policy._predict(obs)
+                                action = action.cpu().detach().numpy()
+                                #print(action)
+                                obs, reward, done, _ = env.step(action)
+                                obs = as_tensor(obs)
+                                if done:
+                                        total_rewards_list.append(reward)
+                                        distance_list.append(env.envs[0].total_distance_travelled)
+                                        total_tasks_done_list.append(env.envs[0].task_done.sum())
+                                        print(env.envs[0].task_done.sum())
+                                        break
 
                 total_rewards_array = np.array(total_rewards_list)
                 distance_list_array = np.array(distance_list)

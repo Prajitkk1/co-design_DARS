@@ -14,15 +14,19 @@ for problem_type in problem_types:
     else:
         from training_config import get_config
     config = get_config()
-    n_test_Scenarios = 100 # number of test scenarios
+    n_test_Scenarios = 250 # number of test scenarios
     trained_model_n_loc = config.n_locations
     trained_model_n_robots = config.n_robots
-    loc_test_multipliers = [1]
-    robot_test_multipliers = [1]
+    #loc_test_multipliers = [1,1.25,1.5, 2, 3]
+    #robot_test_multipliers = [1, 1.25,1.5, 2 ,3]
+    loc_test_multipliers = [51,101,151]
+    robot_test_multipliers = [5,10,15]
     for loc_mult in loc_test_multipliers:
         for rob_mult in robot_test_multipliers:
-            n_robots_test = int(rob_mult*loc_mult*trained_model_n_robots) + 1
-            n_loc_test = int(trained_model_n_loc*loc_mult)
+            # n_robots_test = int(rob_mult*loc_mult*trained_model_n_robots)
+            # n_loc_test = int(trained_model_n_loc*loc_mult)
+            n_robots_test = int(rob_mult)
+            n_loc_test = int(loc_mult)
 
             env_list = []
             for i in range(n_test_Scenarios):

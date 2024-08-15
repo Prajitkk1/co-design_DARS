@@ -6,6 +6,7 @@ Date: 4/14/22 """
 # import numpy as np
 # import gym
 import time
+from tkinter import CURRENT
 from gym import Env
 from collections import defaultdict
 from gym.spaces import Discrete, Box, Dict
@@ -15,57 +16,111 @@ from topology import *
 import scipy.sparse as sp
 from persim import wasserstein
 from scipy.io import loadmat
-
-from scipy.interpolate import griddata
+import csv
+from sklearn.linear_model import LinearRegression
 import math
 import os 
+import statsmodels.api as sm
+import copy
 Paret = loadmat('paretos.mat')
-# Assume Paret is a numpy array
 Paret = np.array(Paret['Paret'])
-np.random.seed(0)
-# Training
+
 Capas = Paret[:, [6, 7, 8]]
+payloads = -Capas[:, 0]
+speeds = -Capas[:, 2]
+ranges = -Capas[:, 1]
 
-# Define the grid where you want to interpolate
-grid_x, grid_y = np.mgrid[min(Capas[:,0]):max(Capas[:,0]):100j, min(Capas[:,1]):max(Capas[:,1]):100j]
+# Preparing the data
+X = ranges.reshape(-1, 1)
+X = sm.add_constant(X)  # Adding a constant term for intercept
+y = speeds
 
-# Perform the interpolation using griddata function
-grid_z = griddata(Capas[:,:2], Capas[:,2], (grid_x, grid_y), method='nearest')
-def get_speed(payload, range_1):
-    # Now you can use griddata to interpolate at new points:
-    speed_pred = griddata((grid_x.ravel(), grid_y.ravel()), grid_z.ravel(), (-payload, -range_1), method='nearest')
-    speed_pred = -speed_pred
-    return speed_pred
+# Define and fit the model for the 5th percentile (lower boundary)
+quantile_05_model = sm.regression.quantile_regression.QuantReg(y, X).fit(q=0.05)
+
+# Define and fit the model for the 95th percentile (upper boundary)
+quantile_95_model = sm.regression.quantile_regression.QuantReg(y, X).fit(q=0.9)
+
+# Constructing the polynomial features matrix
+X_poly = np.column_stack([
+    speeds**2,
+    speeds,
+    ranges
+])
+
+# Fitting a linear regression model
+poly_model = LinearRegression().fit(X_poly, payloads)
+
+
+def predict_payload(speed, range_val):
+    """
+    Predict the payload based on given speed and range using the polynomial model.
+    
+    Args:
+    - speed (float): The speed value.
+    - range_val (float): The range value.
+    
+    Returns:
+    - float: Predicted payload value.
+    """
+    # Constructing the polynomial features for the given values
+    X_pred = np.array([[speed**2, speed, range_val]])
+    
+    # Predicting using the polynomial model
+    payload_pred = poly_model.predict(X_pred)[0]
+    
+    return payload_pred
+
+def predict_quantile_boundaries_fixed(range_val):
+    """
+    Predict the 5th and 95th percentile speed values for a given range using quantile regression models.
+    
+    Args:
+    - range_val (float): The range value.
+    
+    Returns:
+    - (float, float): Tuple containing the predicted 5th and 95th percentile speed values.
+    """
+    # Preparing the range value for prediction
+    X_pred = np.array([[1.0, range_val]])  # Added constant term for intercept
+    
+    # Predicting using the quantile regression models
+    speed_05_pred = quantile_05_model.predict(X_pred)[0]
+    speed_95_pred = quantile_95_model.predict(X_pred)[0]
+    
+    return speed_05_pred, speed_95_pred
+
+
 def normalize(x):
     return (x - x.min()) / (x.max() - x.min())
+
 import numpy as np
 
-action_0_bounds = {
-                2: (8, 15.1),
-                3: (7.76, 14.97),
-                4: (6.73, 11.59),
-                5: (5.81, 9.4),
-                6: (4.82, 7.99),
-                7: (4.16, 6.80)
-            }
-
 def scale_action_values(action_values):
-    assert len(action_values) == 1, "The input array should have 3 values."
+    assert len(action_values) == 3, "The input array should have 3 values."
     scaled_values = np.zeros_like(action_values, dtype=float)
 
-    # Scale the first value to the range 2 to 7 and round to the nearest integer.
-    scaled_values[0] = round(((action_values[0] + 1) / 2) * (7 - 2) + 2)
+    scaled_values[0] = (action_values[0] * (15.17 - 7.17)) + 7.17
+    
+    quantile_boundary = predict_quantile_boundaries_fixed(scaled_values[0])
+    min_value = quantile_boundary[0]
+    max_value = quantile_boundary[1]
 
-    # Get the min and max values for the second action based on the scaled first action value
-    min_val, max_val = action_0_bounds[scaled_values[0]]
-
-    # Scale the second value to the retrieved range.
-    scaled_values[1] = ((action_values[1] + 1) / 2) * (max_val - min_val) + min_val
-
-    # Scale the third value to the range 0 to 1 (no change required since it's already in this range).
-    scaled_values[2] = (action_values[2] + 1) / 2
-
-    return scaled_values
+    speed_value = (action_values[1] * (max_value - min_value)) + min_value
+    if speed_value > max_value:
+        penalty = speed_value - max_value
+        return False, penalty
+    elif speed_value < min_value:
+        penalty = min_value - speed_value
+        return False, penalty
+    else:
+        under_con = True
+        scaled_values[1] = speed_value
+        scaled_values[2] = round(predict_payload(scaled_values[1], scaled_values[0]))
+        scaled_values[2] = np.clip(scaled_values[2], 2, 7)
+        #0 - range, 1 - speed, 2 - payload
+        #print(scaled_values)
+        return True, scaled_values
      
 class MRTA_Flood_Env(Env):
     def __init__(self,
@@ -79,16 +134,17 @@ class MRTA_Flood_Env(Env):
                  n_initial_tasks = 30,
                  display = False,
                  enable_topological_features = False,
-                 training = True
+                 training = True,
+                 with_morphology=False
                  ):
         # Action will be choosing the next task. (Can be a task that is alraedy done)
         # It would be great if we can force the agent to choose not-done task
         super(MRTA_Flood_Env, self).__init__()
         self.n_locations = n_locations
-        low_bounds = np.array([-1])
-        high_bounds = np.array([1])
-        self.action_space = Discrete(1)#Box(low=low_bounds, high=high_bounds, shape=(1,))
-        self.locations = np.random.random((n_locations, 2))*5
+        self.with_morphology = with_morphology
+
+        self.action_space =  [Box(0,1,(2,), dtype=np.float64), Discrete(1)]
+        self.locations = np.random.random((n_locations, 2))*4
         self.depot = self.locations[0, :]
         self.visited = visited
         self.n_agents = n_agents
@@ -115,7 +171,7 @@ class MRTA_Flood_Env(Env):
         self.max_capacity = 5
         self.max_range = 5.68
 
-        self.time_deadlines = (torch.tensor(np.random.random((1, n_locations)))*.3 + .7)*1
+        self.time_deadlines = (torch.tensor(np.random.random((1, n_locations)))*.5 + .5)*2
         self.time_deadlines[0, 0] = 1000000
         self.location_demand = torch.ones((1, n_locations), dtype=torch.float32)
         self.task_done = torch.zeros((1, n_locations), dtype=torch.float32)
@@ -147,6 +203,7 @@ class MRTA_Flood_Env(Env):
                 6: (4.82, 7.99),
                 7: (4.16, 6.80)
             }
+        self.talent_beginned = [0.5,0.5]
         if self.enable_topological_features:
             self.observation_space = Dict(
                 dict(
@@ -162,7 +219,6 @@ class MRTA_Flood_Env(Env):
             topo_laplacian = self.get_topo_laplacian(state)
             state["topo_laplacian"] = topo_laplacian
             self.topo_laplacian = topo_laplacian
-
         else:
             self.observation_space = Dict(
                 dict(
@@ -173,6 +229,8 @@ class MRTA_Flood_Env(Env):
                     agents_graph_nodes=Box(low=0, high=1, shape=(n_agents, self.agent_node_dim)),
                     agent_taking_decision=Box(low=0, high=n_agents, shape=(1,1), dtype=int),
                     agent_talents=Box(low=4, high=14.97, shape=(1,2), dtype=np.float32),
+                    step= Box(low=0, high=55, shape=(1,), dtype=int),
+                    talent_beginned= Box(low=0, high=1, shape=(2,), dtype=np.float32)
                 ))
 
         self.training = training
@@ -182,15 +240,39 @@ class MRTA_Flood_Env(Env):
         self.mask[0,0] = 1
 
         
-
-    def initialize(self):
-        self.max_capacity = 5
-        self.max_range = 8.13
-        #speed = get_speed(self.max_capacity, self.max_range)
-        self.agent_speed = 23.6  # this param should be handles=d carefully. Makesure this is the same for the baselines, 23.7 is for the f450 baselines
-
+    def initialize(self, talents):
+    #0 - range, 1 - speed, 2 - payload
+        self.max_capacity = talents[2]
+        self.max_range = talents[0]
+        speed = talents[1]
+        self.agent_speed = speed  # this param should be handles=d carefully. Makesure this is the same for the baselines
+        #print(self.max_capacity, self.max_range, self.agent_speed)
         self.agents_current_range = torch.ones((1,self.n_agents), dtype=torch.float32)*self.max_range
         self.agents_current_payload = torch.ones((1,self.n_agents), dtype=torch.float32)*self.max_capacity
+        saving = [self.max_capacity, self.max_range, self.agent_speed]
+        #print(saving, "saving")
+        self.agent_distance_travelled = torch.zeros((1, self.n_agents), dtype=torch.float32)
+        self.agent_distance_travelled_per_trip = list()
+        self.agent_task_completed = torch.zeros((1, self.n_agents), dtype=torch.float32)
+        self.completed_tasks_distance = list()
+        self.deadline_passed_distances = list()
+        self.task_completed_info = list()
+        self.time_deadlines_copy = copy.deepcopy(self.time_deadlines)
+        saving = [self.max_capacity, self.max_range, self.agent_speed]
+        self.packages_per_trip = {}
+        for i in range(self.n_agents):
+            key = i
+            value = [0]
+            self.packages_per_trip[key] = value
+        self.distances_per_trip = {}
+        for i in range(self.n_agents):
+            key = i
+            value = [0]
+            self.distances_per_trip[key] = value
+        with open('data1.csv', mode='a', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(saving)
+
 
     def get_state(self):
         # include locations visited into the state
@@ -212,6 +294,7 @@ class MRTA_Flood_Env(Env):
         task_graph_nodes_normalized = normalize(task_graph_nodes)
         task_graph_adjacency_normalized = normalize(task_graph_adjacency)
         agents_graph_nodes_normalized = normalize(agents_graph_nodes)
+        step = np.array([self.step_count])
         #agent_taking_decision_normalized = normalize(self.agent_taking_decision)
 
         if self.enable_topological_features:
@@ -233,7 +316,8 @@ class MRTA_Flood_Env(Env):
                 'agents_graph_adjacency':agents_graph_adjacency,
                 'agent_taking_decision': torch.tensor([[self.agent_taking_decision]]),
                 'agent_talents': torch.tensor(agent_talents).reshape(1,2),
-
+                'step': torch.tensor(step).reshape(1,),
+                'talent_beginned': torch.tensor(self.talent_beginned)
             }
         return state
 
@@ -301,71 +385,80 @@ class MRTA_Flood_Env(Env):
         return topo_laplacian_k_2
 
     def step(self, action):
-        # print("Time: ", self.time)
-        # print("New action taken from the available list: ", action)
-        #action = self.active_tasks[action]
-        #print("Actual action: ", action)
-        # self.first_dec = False
-        #action = action.cpu().detach().numpy()
-        # action[0] = (action[0] + 1) / 2
+
+
+        if self.step_count == 0:
+            self.talent_beginned = [action[0],action[1]]
+            condition, action_scaled = scale_action_values(action)
+            if condition == True:
+                self.initialize(action_scaled)
+            elif condition == False:
+                done = True
+                obs = self.get_encoded_state()
+                #print("failed," , action_scaled)
+                return obs, -abs(action_scaled), done, {}  # Return the negative absolute reward value
+
+
+        action = int(action[2])
         self.step_count += 1
         reward = 0.0
-        if self.step_count == 1:
-            self.initialize()
 
-        # possible_tasks = np.where(self.mask==0)[0]
-        # number_tasks_remain = len(possible_tasks)
-        # if action[0] == 1:
-        #     #print(action[2])
-        #     action[0] = action[0] * 0.99
-        self.actions_vals.append(action[0])
-        # action = possible_tasks[int(action[0] * number_tasks_remain)]
-        # if number_tasks_remain >= 2:
-        #
-        # else:
-        #     action = self.active_tasks[1]
-        #print(number_tasks_remain)
-
-        #print(self.agent_taking_decision, action)
         agent_taking_decision = self.agent_taking_decision  # id of the agent taking action
         current_location_id = self.current_location_id  # current location id of the robot taking decision
         self.total_length = self.total_length + 1
 
         info = {}
         travel_distance = self.distance_matrix[current_location_id, action]
+        self.agent_distance_travelled[0, agent_taking_decision] += travel_distance
+        #agent_range = copy.deepcopy(self.agents_current_range[0, agent_taking_decision])
         self.agents_current_range[0, agent_taking_decision] -= travel_distance
+        #if self.agents_current_range[0, agent_taking_decision] < 0:
+            #print(["current location", current_location_id,"distance", travel_distance, "agent range", agent_range])
         self.agents_prev_decision_time[agent_taking_decision, 0] = self.time
         self.visited.append((action, self.agent_taking_decision))
         if action == self.depot_id: # if action is depot, then capacity is full, range is full
+            rech_time = self.calculate_recharge_time(self.agents_current_range[0, agent_taking_decision])
+            #print("remaining_range", self.agents_current_range[0, agent_taking_decision])
+            #print(rech_time)
+            self.agents_next_decision_time[agent_taking_decision] = self.time + travel_distance / self.agent_speed + rech_time
             self.agents_current_payload[0, agent_taking_decision] = torch.tensor(self.max_capacity)
             self.agents_current_range[0, agent_taking_decision] = torch.tensor(self.max_range)
             self.nodes_visited[action] = 0
+            self.packages_per_trip[agent_taking_decision].append(0)
+            self.distances_per_trip[agent_taking_decision].append(0)
+
+
         if self.nodes_visited[action] != 1 and action != self.depot_id:
             # range is reduced, capacity is reduced by 1
-
+            self.packages_per_trip[agent_taking_decision][-1] +=1
+            self.task_completed_info.append([self.locations[action], self.time + (travel_distance / self.agent_speed)])
             distance_covered = self.total_distance_travelled + travel_distance
+            self.distances_per_trip[agent_taking_decision][-1] += travel_distance
             self.total_distance_travelled = distance_covered
             self.agents_distance_travelled[agent_taking_decision] += travel_distance
             self.agents_current_payload[0, agent_taking_decision] -= self.location_demand[0, action].item()
+            #print(self.distance_matrix[self.depot_id, action])
+            self.completed_tasks_distance.append([self.distance_matrix[self.depot_id, action], self.time_deadlines_copy[0, action]])
             #print("working here")
             # update the  status of the node_visited that was chosen
             self.nodes_visited[action] = 1
+            self.agent_task_completed[0, agent_taking_decision] += 1
             #print(travel_distance / self.agent_speed)
             
-            
+            self.agents_next_decision_time[agent_taking_decision] = self.time + travel_distance / self.agent_speed
             if self.time_deadlines[0, action] < torch.tensor(self.time + (travel_distance / self.agent_speed)):
                 self.deadline_passed[0, action] = 1
             else:
                 self.task_done[0, action] = 1
                 # reward = 1/(self.n_locations-1)
         self.total_reward += reward
-
+        #print(self.time)
             # change destination of robot taking decision
         self.agents_next_location[agent_taking_decision] = action
         self.agents_prev_location[agent_taking_decision] = current_location_id
         self.agents_destination_coordinates[agent_taking_decision] = self.locations[action].copy()
         self.agents_distance_to_destination[agent_taking_decision] = travel_distance
-        self.agents_next_decision_time[agent_taking_decision] = self.time + travel_distance / self.agent_speed
+        
         if self.display:
             self.render(action)
 
@@ -381,14 +474,14 @@ class MRTA_Flood_Env(Env):
             self.nodes_visited[deadlines_passed_ids[:, 1], 0] = 1
         # print("Active tasks before update: ", self.active_tasks)
         self.active_tasks = ((self.nodes_visited == 0).nonzero())[0]
-        # print("Active tasks after update: ", self.active_tasks)
-        #print(self.active_tasks)
+
 
         self.available_tasks = (self.time_start <= self.time).to(torch.float32).T # making new tasks available
 
         if sum(self.nodes_visited) == self.n_locations - 1:
             final_distance_to_depot = torch.cdist(torch.tensor(self.agents_destination_coordinates), torch.tensor(self.depot[None,:])).sum().item()
-            if self.task_done.sum() == self.n_locations - 1:
+            if self.task_done.sum() >= self.n_locations - 1:
+                print("more success")
                 reward = (self.n_locations - (self.n_locations - self.task_done.sum()))/self.n_locations
                 reward = reward *10
             else:
@@ -399,15 +492,26 @@ class MRTA_Flood_Env(Env):
             #print(self.time)
             self.total_reward = reward
             self.done = True
-            dir_path = "action_val"
-            #num_files = len([f for f in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, f))])
+            for index, value in np.ndenumerate(self.deadline_passed):
+                if value == 1:
+                    self.deadline_passed_distances.append([self.distance_matrix[self.depot_id, index], self.time_deadlines_copy[0,index]])
+            result_scenario = dict()
+            result_scenario["agent_distance_travelled"]= self.agent_distance_travelled
+            result_scenario["agent_task_done"] = self.agent_task_completed
+            result_scenario["total_distance_travelled"] = self.total_distance_travelled
+            result_scenario["packs_per_trip"] = self.packages_per_trip
+            result_scenario["missed_deadline_distances"] = self.deadline_passed_distances
+            result_scenario["completed_mission_distances"] = self.completed_tasks_distance
+            result_scenario["distances_per_trip"] = self.distances_per_trip
+            result_scenario["task_completed_info"] = self.task_completed_info
+            # Check if directory exists
+            directory = "scenario_results_"+str(self.n_locations)+"_robs_" + str(self.n_agents)
+            if not os.path.exists(directory):
+                os.makedirs(directory)
 
-           # my_array = np.array(self.actions_vals)
-
-            # Save the array to a .npy file
-            #np.save(os.path.join(dir_path, f'{num_files + 1}.npy'), my_array)
-            #print("dandanakka done")
-            #print(self.task_done.sum())
+            llst = len(os.listdir(directory))
+            file_name = directory + "/result" + str(llst+1)+".npy"
+            np.save(file_name, result_scenario)
             info = {"is_success": self.done,
                     "episode": {
                         "r": self.total_reward,
@@ -417,6 +521,16 @@ class MRTA_Flood_Env(Env):
             reward = reward.item()
 
         return self.get_encoded_state(), reward, self.done, info
+    
+    def calculate_recharge_time(self, current_range):
+        if self.max_range > 1:  # Ensure division is valid
+            s = current_range / (self.max_range - 1)
+        else:
+            s = 0  # Avoid division by zero if max_range is 1
+        s = min(s, 1)
+        recharge_time = 0.02 + (0.8 - 0.02) * (1 - s)
+        #print(s, recharge_time, current_range, self.max_range)
+        return recharge_time
 
     def get_mask(self):
         # masking:
@@ -431,19 +545,24 @@ class MRTA_Flood_Env(Env):
         if self.agents_current_payload[0, agent_taking_decision] == 0:
             mask[1:,0] = 1
             mask[0, 0] = 0
-        elif current_location_id == self.depot_id:
-            mask[0, 0] = 1
         else:
             unreachbles = (self.distance_matrix[0,:] + self.distance_matrix[current_location_id,:] > self.agents_current_range[0, agent_taking_decision].item()).nonzero()
+            #print(self.distance_matrix[0,:], "distance matrix")
+            #print(self.distance_matrix[current_location_id,:], "from current location")
+            #print(self.agents_current_range[0, agent_taking_decision], "current_range")
+            #print(unreachbles, "no reaching")
             if unreachbles[0].shape[0] != 0:
                 mask[unreachbles[0], 0] = 1
             mask = np.logical_or(mask, (self.deadline_passed.T).numpy()).astype(mask.dtype)
             if mask[1:,0].prod() == 1: # if no other feasible locations, then go to depot
                 mask[0,0] = 0
-
+        if current_location_id == self.depot_id:
+            mask[0, 0] = 1
         if mask.prod() != 0.0:
             mask[0,0] = 0
+        #print("mask before numpy", mask)
         mask = mask*(self.available_tasks).numpy() # making unavailable tasks
+        #print("mask after numpy", mask)
         return mask
 
     def generate_task_graph(self):
@@ -545,9 +664,6 @@ class MRTA_Flood_Env(Env):
         self.actions_vals = []
         if self.training:
             self.step_count = 0
-            low_bounds = np.array([-1])
-            high_bounds = np.array([1])
-            self.action_space = Box(low=low_bounds, high=high_bounds, shape=(1,))
             self.locations = np.random.random((self.n_locations, 2)) * 5
             self.depot = self.locations[0, :]
             self.visited = []
@@ -571,7 +687,7 @@ class MRTA_Flood_Env(Env):
             self.total_length = 0
             #self.agents_current_range = torch.ones((1, self.n_agents), dtype=torch.float32) * self.max_range
             #self.agents_current_payload = torch.ones((1, self.n_agents), dtype=torch.float32) * self.max_capacity
-            self.time_deadlines = (torch.tensor(np.random.random((1, self.n_locations))) * .3 + .7) * 1
+            self.time_deadlines = (torch.tensor(np.random.random((1, self.n_locations))) * .3 + .7) * 2
             self.time_deadlines[0, 0] = 1000000 # large number for depot,
             self.location_demand = torch.ones((1, self.n_locations), dtype=torch.float32)
             self.task_done = torch.zeros((1, self.n_locations), dtype=torch.float32)
