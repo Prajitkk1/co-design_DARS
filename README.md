@@ -10,19 +10,21 @@ We assume each location requires just one survival package. The predicted time a
 
 ### MDP Formulation:
 
-The MRTA-Flood problems involve a set of nodes/vertices ($V$) and a set of edges ($E$) that connect the vertices to each other, which can be represented as a complete graph $\mathcal{G} = (V, E, \Omega)$, where $\Omega$ is a weighted adjacency matrix. Each node represents a task, and each edge connects a pair of nodes. For MRTA with $N_{T}$ tasks, the number of vertices and the number of edges are $N_{T}$ and $N_{T}(N_{T}-1)/2$, respectively. Node $i$ is assigned a 3-dimensional feature vector denoting the task location and time deadline, i.e., $\rho_i=[x_i,y_i,\tau_i]$ where $i \in [1, N_{T}]$. Here, the weighted between two edges $\omega_{ij}$ ($\in \Omega$) can be computed as $\omega_{ij} = 1 / (1+\sqrt{(x_{i}-x_{j})^{2} + (y_{i}-y_{j})^{2} + (\tau_i - \tau_j)^2})$, where $i, j \in [1,N_{T}]$.
+The MRTA-Flood problems involve a set of nodes/vertices ($V$) and a set of edges ($E$) that connect the vertices to each other, which can be represented as a complete graph $\mathcal{G} = (V, E, \Omega)$, where $\Omega$ is a weighted adjacency matrix. Each node represents a task, and each edge connects a pair of nodes. For MRTA with $N_{T}$ tasks, the number of vertices and the number of edges are $N_{T}$ and $N_{T}(N_{T}-1)/2$, respectively. Node $i$ is assigned a 3-dimensional feature vector denoting the task location and time deadline, i.e., $\rho_i=[x_i,y_i,\tau_i]$ where $i \in [1, N_{T}]$. Here, the weighted between two edges $\omega_{ij}$ ($\in \Omega$) can be computed as $`\omega_{ij} = 1 / (1+\sqrt{(x_{i}-x_{j})^{2} + (y_{i}-y_{j})^{2} + (\tau_i - \tau_j)^2})`$, where $`i, j \in [1,N_{T}]`$.
 The MDP defined in a decentralized manner for each individual robot (to capture its task selection process). The components of the MDP can be defined as 
 
-State Space ($\mathcal{S}$): A robot $r$ at its decision-making instance uses a state $s\in\mathcal{S}$, which contains the following information: 1) Task graph $\mathcal{G}$, 2) the current mission time $t$, 3) the current location of the robot ($`x^{t}_{r}, y^{t}_{r}`$), 4) remaining ferry-range (battery state) of robot $`r`$ $`\phi^{t}_{r}`$, 5) capacity of robot $r$ $c^{t}_{r}$ , 6) destination of its peers ($`x_{k}, y_{k}, k \in [1, N_{R}], k \neq r`$), 7) the remaining ferry-range of peers $`\phi^{t}_{k}, k \in [1, N_{R}], k \neq r`$, 8) capacity of peers $`c^{t}_{k}, k \in [1, N_{R}], k \neq r`$, 9) next destination time of peers $t^{next}_{k}, k \in [1, N_{R}], k \neq r$, and 10) the talents $\hat{Y}_{\texttt{TL,1}}$ and $\hat{Y}_{\texttt{TL,2}}$. For the MRTA-Flood problem, we assume that each robot can broadcast its information to its peers without the need for a centralized system for communication, as aligned with modern communication capabilities. 
+State Space ($`\mathcal{S}`$): A robot $r$ at its decision-making instance uses a state $`s\in\mathcal{S}`$, which contains the following information: 1) Task graph $`\mathcal{G}`$, 2) the current mission time $t$, 3) the current location of the robot ($`x^{t}_{r}, y^{t}_{r}`$), 4) remaining ferry-range (battery state) of robot $`r`$ $`\phi^{t}_{r}`$, 5) capacity of robot $r$ $c^{t}_{r}$ , 6) destination of its peers ($`x_{k}, y_{k}, k \in [1, N_{R}], k \neq r`$), 7) the remaining ferry-range of peers $`\phi^{t}_{k}, k \in [1, N_{R}], k \neq r`$, 8) capacity of peers $`c^{t}_{k}, k \in [1, N_{R}], k \neq r`$, 9) next destination time of peers $`t^{next}_{k}, k \in [1, N_{R}], k \neq r`$, and 10) the talents $`\hat{Y}_{\texttt{TL,1}}$ and $\hat{Y}_{\texttt{TL,2}}`$. For the MRTA-Flood problem, we assume that each robot can broadcast its information to its peers without the need for a centralized system for communication, as aligned with modern communication capabilities. 
 
-Action Space ($\mathcal{A}$): The set of actions is represented as $\mathcal{A}$, where each action $a$ is defined as the index of the selected task, $\{0,\ldots,N_{T}\}$ with the index of the depot as $0$. The task $0$ (the depot) can be selected by multiple robots, but the other tasks are allowed to be chosen once if they are active (not completed or missed tasks). 
+Action Space ($`\mathcal{A}`$): The set of actions is represented as $`\mathcal{A}`$, where each action $a$ is defined as the index of the selected task, $`\{0,\ldots,N_{T}\}`$ with the index of the depot as $0$. The task $0$ (the depot) can be selected by multiple robots, but the other tasks are allowed to be chosen once if they are active (not completed or missed tasks). 
 
-Reward ($\mathcal{R}$): The reward function is defined as
-$10 \times N_{\text{success}}/N_{T}$, where $N_{\text{success}}$
+Reward ($`\mathcal{R}`$): The reward function is defined as
+$`10 \times N_{\text{success}}/N_{T}`$, where $`N_{\text{success}}`$
 is the number of successfully completed tasks and is calculated at the end of the episode.  
 
 Transition: The transition is an event-based trigger. An event is defined as the condition that a robot reaches its selected task or visits the depot location. Since here we do not consider any uncertainty, the state transition probability is 1.
 
 ## To train Co-design:
 run training_mrta.py
+
+
 
